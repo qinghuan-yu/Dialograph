@@ -14,6 +14,8 @@ sys.path.insert(0, str(Path(__file__).parent))
 
 from output_paths import get_support_output_dir, sanitize_filename
 
+TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+
 
 def load_chat(filepath: str) -> dict:
     """加载聊天记录 JSON 文件"""
@@ -21,13 +23,68 @@ def load_chat(filepath: str) -> dict:
         return json.load(f)
 
 
-def parse_message(msg: dict) -> dict | None:
+def normalize_timestamp(value) -> float | None:
+    """Return a sortable numeric timestamp, or None when missing/malformed."""
+    if value is None or value == "":
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def parse_message_time(time_str: str | None) -> datetime | None:
+    if not time_str:
+        return None
+    try:
+        return datetime.strptime(time_str, TIME_FORMAT)
+    except (TypeError, ValueError):
+        return None
+
+
+def message_sort_key(message: dict) -> tuple[int, float, int]:
+    timestamp = normalize_timestamp(message.get("timestamp"))
+    original_index = int(message.get("original_index", 0))
+    if timestamp is not None:
+        return (0, timestamp, original_index)
+
+    parsed_time = parse_message_time(message.get("time_str", ""))
+    if parsed_time is not None:
+        return (1, parsed_time.timestamp(), original_index)
+
+    return (2, float(original_index), original_index)
+
+
+def skip_reason_for_message(msg: dict) -> str:
+    msg_type = msg.get("type", "")
+    content = msg.get("content", "")
+    if msg_type == "系统消息":
+        return "system_message"
+    if not content:
+        return "empty_content"
+    return "unsupported_or_unparsed"
+
+
+def parse_message(msg: dict, original_index: int | None = None) -> dict | None:
     """解析单条消息，提取关键字段"""
     msg_type = msg.get("type", "")
     content = msg.get("content", "")
     is_send = msg.get("isSend", 0)
     time_str = msg.get("formattedTime", "")
-    timestamp = msg.get("createTime", 0)
+    timestamp = msg.get("createTime")
+    parsed_time = parse_message_time(time_str)
+    timestamp_value = normalize_timestamp(timestamp)
+
+    base = {
+        "is_send": is_send,
+        "time_str": time_str,
+        "timestamp": timestamp,
+        "timestamp_valid": timestamp_value is not None,
+        "time_valid": parsed_time is not None,
+        "sender": "me" if is_send == 1 else "other",
+    }
+    if original_index is not None:
+        base["original_index"] = original_index
 
     # 跳过无内容的系统消息和图片消息（内容为null）
     if msg_type == "系统消息":
@@ -36,36 +93,84 @@ def parse_message(msg: dict) -> dict | None:
     # 对于图片/动画表情，标记类型但不提取内容
     if msg_type in ("图片消息", "动画表情"):
         return {
+            **base,
             "type": msg_type,
             "content": f"[{msg_type}]",
-            "is_send": is_send,
-            "time_str": time_str,
-            "timestamp": timestamp,
-            "sender": "me" if is_send == 1 else "other",
         }
 
     if msg_type == "文本消息" and content:
         return {
+            **base,
             "type": msg_type,
             "content": content,
-            "is_send": is_send,
-            "time_str": time_str,
-            "timestamp": timestamp,
-            "sender": "me" if is_send == 1 else "other",
         }
 
     # 其他消息类型（语音、视频、链接等）
     if content:
         return {
+            **base,
             "type": msg_type,
             "content": content,
-            "is_send": is_send,
-            "time_str": time_str,
-            "timestamp": timestamp,
-            "sender": "me" if is_send == 1 else "other",
         }
 
     return None
+
+
+def parse_chat_messages(raw_messages: list[dict]) -> dict:
+    """Parse, sort, and diagnose raw exported messages."""
+    parsed_messages = []
+    skip_reasons = Counter()
+    message_types = Counter()
+
+    for original_index, msg in enumerate(raw_messages):
+        message_types[msg.get("type", "") or "unknown"] += 1
+        parsed = parse_message(msg, original_index=original_index)
+        if parsed:
+            parsed_messages.append(parsed)
+        else:
+            skip_reasons[skip_reason_for_message(msg)] += 1
+
+    sorted_messages = sorted(parsed_messages, key=message_sort_key)
+    sort_changed = [m.get("original_index") for m in sorted_messages] != [
+        m.get("original_index") for m in parsed_messages
+    ]
+    invalid_time_count = sum(1 for message in sorted_messages if not message.get("time_valid"))
+    invalid_timestamp_count = sum(1 for message in sorted_messages if not message.get("timestamp_valid"))
+
+    return {
+        "messages": sorted_messages,
+        "diagnostics": {
+            "raw_message_count": len(raw_messages),
+            "parsed_message_count": len(sorted_messages),
+            "skipped_message_count": sum(skip_reasons.values()),
+            "skip_reasons": dict(skip_reasons),
+            "message_types": dict(message_types),
+            "sort_changed": sort_changed,
+            "invalid_time_message_count": invalid_time_count,
+            "invalid_timestamp_message_count": invalid_timestamp_count,
+        },
+    }
+
+
+def message_date_label(message: dict, fallback: str = "unknown") -> str:
+    parsed_time = parse_message_time(message.get("time_str", ""))
+    if parsed_time is not None:
+        return parsed_time.strftime("%Y-%m-%d")
+    time_str = message.get("time_str", "")
+    return time_str[:10] if len(time_str) >= 10 else fallback
+
+
+def message_month_label(message: dict, fallback: str = "unknown") -> str:
+    parsed_time = parse_message_time(message.get("time_str", ""))
+    if parsed_time is not None:
+        return parsed_time.strftime("%Y-%m")
+    time_str = message.get("time_str", "")
+    return time_str[:7] if len(time_str) >= 7 else fallback
+
+
+def message_hour(message: dict) -> int | None:
+    parsed_time = parse_message_time(message.get("time_str", ""))
+    return parsed_time.hour if parsed_time is not None else None
 
 
 def compute_statistics(messages: list[dict], session: dict) -> dict:
@@ -89,21 +194,20 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
     weekday_counts = defaultdict(int)
 
     for m in messages:
-        date_str = m["time_str"][:10]  # "2024-10-10"
-        month_str = m["time_str"][:7]  # "2024-10"
-        hour = int(m["time_str"][11:13]) if len(m["time_str"]) > 13 else 0
+        date_str = message_date_label(m)
+        month_str = message_month_label(m)
+        hour = message_hour(m)
 
         daily_counts[date_str][m["sender"]] += 1
         daily_counts[date_str]["total"] += 1
         monthly_counts[month_str][m["sender"]] += 1
         monthly_counts[month_str]["total"] += 1
-        hourly_counts[hour] += 1
+        if hour is not None:
+            hourly_counts[hour] += 1
 
-        try:
-            dt = datetime.strptime(m["time_str"], "%Y-%m-%d %H:%M:%S")
+        dt = parse_message_time(m.get("time_str", ""))
+        if dt is not None:
             weekday_counts[dt.weekday()] += 1
-        except (ValueError, IndexError):
-            pass
 
     # === 对话轮次分析 ===
     # 定义"对话轮次"：同一人连续发消息算一轮，换人则开启新轮
@@ -127,16 +231,13 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
         if i == 0:
             continue
         # 如果两轮之间有较长间隔（>2小时），算作新话题发起
-        try:
-            prev_time = datetime.strptime(conversation_turns[i-1]["msgs"][-1] if conversation_turns[i-1]["msgs"] else turn["start_time"], "%Y-%m-%d %H:%M:%S")
-        except (ValueError, IndexError):
-            pass
+        # TODO: replace this legacy turn proxy with gap-based session modeling.
 
     # === 主动性分析 ===
     # 谁更常开启新的一天的对话
     daily_first_msg = {}
     for m in messages:
-        date_str = m["time_str"][:10]
+        date_str = message_date_label(m)
         if date_str not in daily_first_msg:
             daily_first_msg[date_str] = m["sender"]
 
@@ -146,15 +247,13 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
     # 计算连续消息间的时间差
     reply_times = {"me": [], "other": []}
     for i in range(1, len(messages)):
-        try:
-            t1 = datetime.strptime(messages[i-1]["time_str"], "%Y-%m-%d %H:%M:%S")
-            t2 = datetime.strptime(messages[i]["time_str"], "%Y-%m-%d %H:%M:%S")
+        t1 = parse_message_time(messages[i-1].get("time_str", ""))
+        t2 = parse_message_time(messages[i].get("time_str", ""))
+        if t1 is not None and t2 is not None:
             diff_seconds = (t2 - t1).total_seconds()
             # 只统计合理的回复间隔（5秒到2小时）
             if 5 < diff_seconds < 7200 and messages[i]["sender"] != messages[i-1]["sender"]:
                 reply_times[messages[i]["sender"]].append(diff_seconds)
-        except (ValueError, IndexError):
-            pass
 
     # === 消息长度统计 ===
     my_text_msgs = [m for m in my_msgs if m["type"] == "文本消息" and m["content"]]
@@ -171,7 +270,7 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
     # 谁更常发出每天最后一条消息
     daily_last_msg = {}
     for m in messages:
-        date_str = m["time_str"][:10]
+        date_str = message_date_label(m)
         daily_last_msg[date_str] = m["sender"]
     last_msg_counter = Counter(daily_last_msg.values())
 
@@ -195,7 +294,7 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
     recent_turns = conversation_turns[-50:] if len(conversation_turns) > 50 else conversation_turns
 
     # === 深夜对话（23:00-05:00）===
-    late_night_msgs = [m for m in messages if len(m["time_str"]) > 13 and int(m["time_str"][11:13]) in (23, 0, 1, 2, 3, 4)]
+    late_night_msgs = [m for m in messages if message_hour(m) in (23, 0, 1, 2, 3, 4)]
 
     def avg_or_none(lst):
         return round(sum(lst) / len(lst), 1) if lst else None
@@ -213,8 +312,8 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
         "total_messages": total,
         "my_message_count": len(my_msgs),
         "other_message_count": len(other_msgs),
-        "first_date": messages[0]["time_str"][:10],
-        "last_date": messages[-1]["time_str"][:10],
+        "first_date": message_date_label(messages[0]),
+        "last_date": message_date_label(messages[-1]),
         "active_days": len(daily_counts),
         "daily_first_msg": dict(first_msg_counter),
         "daily_last_msg": dict(last_msg_counter),
@@ -237,6 +336,8 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
         "late_night_message_count": len(late_night_msgs),
         "hourly_distribution": {str(h): hourly_counts.get(h, 0) for h in range(24)},
         "weekday_distribution": {str(w): weekday_counts.get(w, 0) for w in range(7)},
+        "invalid_time_message_count": sum(1 for message in messages if not message.get("time_valid")),
+        "invalid_timestamp_message_count": sum(1 for message in messages if not message.get("timestamp_valid")),
     }
 
 
@@ -259,9 +360,10 @@ def extract_conversation_segments(messages: list[dict], n_segments: int = 20) ->
     last_time = None
 
     for m in messages:
-        try:
-            current_time = datetime.strptime(m["time_str"], "%Y-%m-%d %H:%M:%S")
-        except (ValueError, IndexError):
+        current_time = parse_message_time(m.get("time_str", ""))
+        if current_time is None:
+            if current_segment:
+                current_segment.append(m)
             continue
 
         if last_time and (current_time - last_time).total_seconds() > 3600 * 4:
@@ -288,7 +390,7 @@ def extract_conversation_segments(messages: list[dict], n_segments: int = 20) ->
 
     # 合并并按时间排序
     selected = sorted_by_length + sampled
-    selected.sort(key=lambda s: s[0]["timestamp"] if s else 0)
+    selected.sort(key=lambda s: message_sort_key(s[0]) if s else (2, 0, 0))
     return selected[:n_segments]
 
 
@@ -308,6 +410,8 @@ def format_statistics_report(stats: dict, samples: list[dict], segments: list[li
     report.append(f"- 我发送: {stats['my_message_count']} 条 ({stats['my_message_count']/stats['total_messages']*100:.1f}%)")
     report.append(f"- 对方发送: {stats['other_message_count']} 条 ({stats['other_message_count']/stats['total_messages']*100:.1f}%)")
     report.append(f"- 每日平均消息数: {stats['total_messages']/max(stats['active_days'],1):.1f} 条")
+    report.append(f"- 时间格式异常消息: {stats.get('invalid_time_message_count', 0)} 条")
+    report.append(f"- 时间戳异常消息: {stats.get('invalid_timestamp_message_count', 0)} 条")
 
     report.append(f"\n## 主动性指标")
     report.append(f"- 每日首条消息发起者: 我={stats['daily_first_msg'].get('me',0)}天, 对方={stats['daily_first_msg'].get('other',0)}天")
@@ -441,13 +545,18 @@ def main():
     raw_messages = data.get("messages", [])
 
     # 解析消息
-    messages = []
-    for msg in raw_messages:
-        parsed = parse_message(msg)
-        if parsed:
-            messages.append(parsed)
+    parse_result = parse_chat_messages(raw_messages)
+    messages = parse_result["messages"]
+    parse_diagnostics = parse_result["diagnostics"]
 
     print(f"有效消息数: {len(messages)}")
+    if parse_diagnostics["sort_changed"]:
+        print("提示：原始消息顺序已按时间戳重新排序。")
+    if parse_diagnostics["skipped_message_count"] or parse_diagnostics["invalid_time_message_count"]:
+        print(f"解析诊断: 跳过{parse_diagnostics['skipped_message_count']}条, 时间异常{parse_diagnostics['invalid_time_message_count']}条")
+    if not messages:
+        print(f"没有可分析的有效消息，解析诊断: {parse_diagnostics}")
+        sys.exit(1)
 
     # 计算统计
     stats = compute_statistics(messages, session)
@@ -476,6 +585,11 @@ def main():
         json.dump(stats, f, ensure_ascii=False, indent=2)
 
     print(f"统计数据已保存: {stats_file}")
+
+    diagnostics_file = support_dir / f"解析诊断_{sanitize_filename(name)}.json"
+    with open(diagnostics_file, "w", encoding="utf-8") as f:
+        json.dump(parse_diagnostics, f, ensure_ascii=False, indent=2)
+    print(f"解析诊断已保存: {diagnostics_file}")
 
     # 输出关键指标摘要
     print("\n" + "=" * 50)

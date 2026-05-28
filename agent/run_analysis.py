@@ -11,7 +11,14 @@ from pathlib import Path
 # 添加当前目录到路径
 sys.path.insert(0, str(Path(__file__).parent))
 
-from analyze import load_chat, parse_message, compute_statistics, extract_text_samples, extract_conversation_segments, format_statistics_report
+from analyze import (
+    load_chat,
+    parse_chat_messages,
+    compute_statistics,
+    extract_text_samples,
+    extract_conversation_segments,
+    format_statistics_report,
+)
 from config import load_llm_config
 from output_paths import get_support_output_dir, sanitize_filename
 
@@ -187,13 +194,18 @@ def main():
     session = data.get("session", {})
     raw_messages = data.get("messages", [])
 
-    messages = []
-    for msg in raw_messages:
-        parsed = parse_message(msg)
-        if parsed:
-            messages.append(parsed)
+    parse_result = parse_chat_messages(raw_messages)
+    messages = parse_result["messages"]
+    parse_diagnostics = parse_result["diagnostics"]
 
     print(f"有效消息数: {len(messages)}")
+    if parse_diagnostics["sort_changed"]:
+        print("提示：原始消息顺序已按时间戳重新排序。")
+    if parse_diagnostics["skipped_message_count"] or parse_diagnostics["invalid_time_message_count"]:
+        print(f"解析诊断: 跳过{parse_diagnostics['skipped_message_count']}条, 时间异常{parse_diagnostics['invalid_time_message_count']}条")
+    if not messages:
+        print(f"没有可分析的有效消息，解析诊断: {parse_diagnostics}")
+        return 1
 
     # 统计
     stats = compute_statistics(messages, session)
@@ -216,6 +228,11 @@ def main():
     with open(stats_file, "w", encoding="utf-8") as f:
         json.dump(stats, f, ensure_ascii=False, indent=2)
     print(f"统计数据: {stats_file}")
+
+    diagnostics_file = support_dir / f"解析诊断_{sanitize_filename(name)}.json"
+    with open(diagnostics_file, "w", encoding="utf-8") as f:
+        json.dump(parse_diagnostics, f, ensure_ascii=False, indent=2)
+    print(f"解析诊断: {diagnostics_file}")
 
     # 生成分析 prompt
     prompt = generate_analysis_prompt(stats, samples, segments, session)

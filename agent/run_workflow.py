@@ -20,7 +20,7 @@ from analyze import (  # noqa: E402
     format_full_transcript,
     format_statistics_report,
     load_chat,
-    parse_message,
+    parse_chat_messages,
 )
 from config import load_llm_config  # noqa: E402
 from output_paths import get_support_output_dir, sanitize_filename  # noqa: E402
@@ -82,15 +82,6 @@ def parse_args() -> argparse.Namespace:
 
 def load_skill_prompt(skill_path: Path) -> str:
     return skill_path.read_text(encoding="utf-8")
-
-
-def collect_messages(raw_messages: list[dict]) -> list[dict]:
-    messages = []
-    for msg in raw_messages:
-        parsed = parse_message(msg)
-        if parsed:
-            messages.append(parsed)
-    return messages
 
 
 def chunk_messages(
@@ -383,10 +374,41 @@ def format_stats_summary(stats: dict) -> str:
         f"- 我的平均文本长度: {stats['avg_my_msg_length']} 字",
         f"- 对方平均文本长度: {stats['avg_other_msg_length']} 字",
         f"- 深夜消息数: {stats['late_night_message_count']}",
+        f"- 时间格式异常消息: {stats.get('invalid_time_message_count', 0)}",
+        f"- 时间戳异常消息: {stats.get('invalid_timestamp_message_count', 0)}",
         "- 月度趋势:",
     ]
     for item in stats["monthly_trend"]:
         lines.append(f"  - {item['month']}: 总{item['total']}条, 我{item['my_count']}条, 对方{item['other_count']}条")
+    return "\n".join(lines)
+
+
+def format_parse_diagnostics_report(diagnostics: dict) -> str:
+    lines = [
+        "## 解析诊断",
+        f"- 原始消息数: {diagnostics.get('raw_message_count', 0)}",
+        f"- 有效解析消息数: {diagnostics.get('parsed_message_count', 0)}",
+        f"- 跳过消息数: {diagnostics.get('skipped_message_count', 0)}",
+        f"- 是否重新排序: {diagnostics.get('sort_changed', False)}",
+        f"- 时间格式异常消息: {diagnostics.get('invalid_time_message_count', 0)}",
+        f"- 时间戳异常消息: {diagnostics.get('invalid_timestamp_message_count', 0)}",
+        "",
+        "### 跳过原因",
+    ]
+    skip_reasons = diagnostics.get("skip_reasons", {})
+    if skip_reasons:
+        for reason, count in sorted(skip_reasons.items()):
+            lines.append(f"- {reason}: {count}")
+    else:
+        lines.append("- 无")
+
+    lines.append("\n### 原始消息类型")
+    message_types = diagnostics.get("message_types", {})
+    if message_types:
+        for msg_type, count in sorted(message_types.items(), key=lambda item: item[1], reverse=True):
+            lines.append(f"- {msg_type}: {count}")
+    else:
+        lines.append("- 无")
     return "\n".join(lines)
 
 
@@ -666,7 +688,11 @@ def build_artifacts(
     data = load_chat(str(chat_file))
     session = data.get("session", {})
     raw_messages = data.get("messages", [])
-    messages = collect_messages(raw_messages)
+    parse_result = parse_chat_messages(raw_messages)
+    messages = parse_result["messages"]
+    parse_diagnostics = parse_result["diagnostics"]
+    if not messages:
+        raise ValueError(f"{chat_file.name} 没有可分析的有效消息，解析诊断: {parse_diagnostics}")
     stats = compute_statistics(messages, session)
     sample_count = min(max(len(messages) // 120, 150), 260)
     segment_count = min(max(len(messages) // 1800, 15), 28)
@@ -682,6 +708,8 @@ def build_artifacts(
     preproc_file = support_dir / f"预处理_{safe_name}.txt"
     full_transcript_file = support_dir / f"全量解析_{safe_name}.txt"
     stats_file = support_dir / f"统计_{safe_name}.json"
+    diagnostics_file = support_dir / f"解析诊断_{safe_name}.json"
+    diagnostics_report_file = support_dir / f"解析诊断_{safe_name}.md"
     prompt_file = support_dir / f"分析prompt_{safe_name}.md"
     analysis_file = output_dir / f"分析_{safe_name}.md"
     persona_file = output_dir / f"人物侧写_{safe_name}.md"
@@ -700,6 +728,8 @@ def build_artifacts(
         preproc_file.write_text(report_text, encoding="utf-8")
         full_transcript_file.write_text(full_transcript_text, encoding="utf-8")
         stats_file.write_text(json.dumps(stats, ensure_ascii=False, indent=2), encoding="utf-8")
+        diagnostics_file.write_text(json.dumps(parse_diagnostics, ensure_ascii=False, indent=2), encoding="utf-8")
+        diagnostics_report_file.write_text(format_parse_diagnostics_report(parse_diagnostics) + "\n", encoding="utf-8")
     else:
         prompt_file.parent.mkdir(parents=True, exist_ok=True)
     prompt_file.write_text(analysis_prompt, encoding="utf-8")
@@ -711,6 +741,7 @@ def build_artifacts(
         "session": session,
         "messages": messages,
         "stats": stats,
+        "parse_diagnostics": parse_diagnostics,
         "stats_summary": format_stats_summary(stats),
         "message_count": len(messages),
         "sample_count": len(samples),
@@ -721,6 +752,8 @@ def build_artifacts(
         "preproc_file": preproc_file,
         "full_transcript_file": full_transcript_file,
         "stats_file": stats_file,
+        "diagnostics_file": diagnostics_file,
+        "diagnostics_report_file": diagnostics_report_file,
         "prompt_file": prompt_file,
         "analysis_file": analysis_file,
         "persona_file": persona_file,
@@ -951,6 +984,7 @@ def run_single_workflow(
             "evidence_summary_file": str(artifacts["evidence_summary_file"]),
             "phase_summary_file": str(artifacts["phase_summary_file"]),
             "full_transcript_file": str(artifacts["full_transcript_file"]),
+            "diagnostics_file": str(artifacts["diagnostics_file"]),
         },
     )
     return {
@@ -1020,6 +1054,7 @@ def generate_persona_report(
             "evidence_ledger_file": str(artifacts["evidence_ledger_file"]),
             "evidence_summary_file": str(artifacts["evidence_summary_file"]),
             "full_transcript_file": str(artifacts["full_transcript_file"]),
+            "diagnostics_file": str(artifacts["diagnostics_file"]),
         },
     )
     return str(artifacts["persona_file"])
@@ -1086,6 +1121,15 @@ def main() -> int:
                 continue
 
             print(f"- 有效消息数: {initial_artifacts['message_count']}")
+            diagnostics = initial_artifacts["parse_diagnostics"]
+            if diagnostics.get("sort_changed"):
+                print("- 解析诊断: 原始消息顺序已按时间戳重新排序")
+            if diagnostics.get("skipped_message_count") or diagnostics.get("invalid_time_message_count"):
+                print(
+                    "- 解析诊断: "
+                    f"跳过{diagnostics.get('skipped_message_count', 0)}条, "
+                    f"时间异常{diagnostics.get('invalid_time_message_count', 0)}条"
+                )
             if need_analysis:
                 print("- 生成完整预处理文件、全量分块分析材料与关系建模报告...")
                 result = run_single_workflow(
