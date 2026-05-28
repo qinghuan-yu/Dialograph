@@ -34,7 +34,7 @@ Build a reliable local workflow for long-form chat analysis that can:
 | Structured evidence layer | Done | Chunk prompts request JSON evidence; workflow extracts per-chunk evidence and writes a total evidence ledger plus summary. |
 | CodeGraph index | Done | `.codegraph/` initialized and indexed for code navigation. Local DB files are ignored. |
 | Data validation hardening | Done | Parsed messages are sorted by timestamp, original order is preserved, skipped messages are counted, and malformed time fields are reported without crashing stats. |
-| Topic/session modeling | Planned | Replace the current turn-count proxy with gap-based sessions and true initiator metrics. |
+| Topic/session modeling | Done | Statistics now include 4-hour gap-based sessions, session initiators/closers, session size/duration, and in-session reply latency. |
 | Failure recovery | Planned | Add run-id directories, resume support, and atomic promotion of successful runs. |
 | RAG store | Planned | Import structured evidence into SQLite/FTS first; optionally add embeddings later. |
 | Claim ledger | Planned | Require every final conclusion to bind to evidence IDs and counter-evidence IDs. |
@@ -43,29 +43,24 @@ Build a reliable local workflow for long-form chat analysis that can:
 
 ## Near-Term Queue
 
-1. Fix topic/session metrics.
-   - Build sessions by configurable inactivity gap, for example 2h, 4h, 24h.
-   - Compute session initiator, closer, participant message count, and response latency within sessions.
-   - Replace misleading `topic_starters` naming.
-
-2. Add robust run management.
+1. Add robust run management.
    - Write new analysis output under `analysis/临时文件/{safe_name}/runs/{run_id}/`.
    - Keep `latest` metadata pointing to the successful run.
    - Avoid deleting old chunks before a replacement run succeeds.
    - Support resume from completed chunk evidence.
 
-3. Build local RAG foundation.
+2. Build local RAG foundation.
    - Create a SQLite database under ignored local data.
    - Ingest `结构化证据总表_*.json`.
    - Add FTS indexes over evidence, signal, model, trait, and uncertainty fields.
    - Add a query helper for relation/persona evidence retrieval.
 
-4. Add conclusion claim ledger.
+3. Add conclusion claim ledger.
    - Final reports should include machine-readable claims.
    - Each claim should cite support evidence IDs, counter-evidence IDs, confidence, and uncertainty.
    - Use claim ledger to prevent unsupported final conclusions.
 
-5. Add tests.
+4. Add tests.
    - Unit-test filename sanitization and output path behavior.
    - Unit-test chunk coverage for all messages.
    - Unit-test JSON evidence extraction, fallback behavior, and summary truncation.

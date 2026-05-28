@@ -15,6 +15,7 @@ sys.path.insert(0, str(Path(__file__).parent))
 from output_paths import get_support_output_dir, sanitize_filename
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
+DEFAULT_SESSION_GAP_HOURS = 4
 
 
 def load_chat(filepath: str) -> dict:
@@ -173,6 +174,117 @@ def message_hour(message: dict) -> int | None:
     return parsed_time.hour if parsed_time is not None else None
 
 
+def build_conversation_turns(messages: list[dict]) -> list[dict]:
+    """Group consecutive messages from the same sender into speaker turns."""
+    if not messages:
+        return []
+
+    turns = []
+    current_turn = {
+        "sender": messages[0]["sender"],
+        "msgs": [messages[0]["content"]],
+        "start_time": messages[0].get("time_str", ""),
+        "end_time": messages[0].get("time_str", ""),
+        "start_index": messages[0].get("original_index"),
+        "end_index": messages[0].get("original_index"),
+    }
+
+    for message in messages[1:]:
+        if message["sender"] != current_turn["sender"]:
+            turns.append(current_turn)
+            current_turn = {
+                "sender": message["sender"],
+                "msgs": [message["content"]],
+                "start_time": message.get("time_str", ""),
+                "end_time": message.get("time_str", ""),
+                "start_index": message.get("original_index"),
+                "end_index": message.get("original_index"),
+            }
+        else:
+            current_turn["msgs"].append(message["content"])
+            current_turn["end_time"] = message.get("time_str", "")
+            current_turn["end_index"] = message.get("original_index")
+    turns.append(current_turn)
+    return turns
+
+
+def build_sessions(messages: list[dict], gap_hours: int = DEFAULT_SESSION_GAP_HOURS) -> list[dict]:
+    """Split messages into sessions separated by an inactivity gap."""
+    sessions = []
+    current = []
+    last_time = None
+    gap_seconds = gap_hours * 3600
+
+    for message in messages:
+        current_time = parse_message_time(message.get("time_str", ""))
+        if current and current_time is not None and last_time is not None:
+            if (current_time - last_time).total_seconds() > gap_seconds:
+                sessions.append(current)
+                current = []
+
+        current.append(message)
+        if current_time is not None:
+            last_time = current_time
+
+    if current:
+        sessions.append(current)
+
+    return [summarize_session(index, session) for index, session in enumerate(sessions, start=1)]
+
+
+def summarize_session(index: int, session_messages: list[dict]) -> dict:
+    start_time = session_messages[0].get("time_str", "")
+    end_time = session_messages[-1].get("time_str", "")
+    start_dt = parse_message_time(start_time)
+    end_dt = parse_message_time(end_time)
+    duration_minutes = None
+    if start_dt is not None and end_dt is not None:
+        duration_minutes = round(max((end_dt - start_dt).total_seconds(), 0) / 60, 1)
+
+    sender_counts = Counter(message["sender"] for message in session_messages)
+    response_times = {"me": [], "other": []}
+    for i in range(1, len(session_messages)):
+        prev = session_messages[i - 1]
+        curr = session_messages[i]
+        prev_time = parse_message_time(prev.get("time_str", ""))
+        curr_time = parse_message_time(curr.get("time_str", ""))
+        if prev_time is None or curr_time is None or curr["sender"] == prev["sender"]:
+            continue
+        diff_seconds = (curr_time - prev_time).total_seconds()
+        if 5 < diff_seconds < DEFAULT_SESSION_GAP_HOURS * 3600:
+            response_times[curr["sender"]].append(diff_seconds)
+
+    return {
+        "session_index": index,
+        "start_time": start_time,
+        "end_time": end_time,
+        "message_count": len(session_messages),
+        "initiator": session_messages[0]["sender"],
+        "closer": session_messages[-1]["sender"],
+        "my_count": sender_counts.get("me", 0),
+        "other_count": sender_counts.get("other", 0),
+        "duration_minutes": duration_minutes,
+        "reply_time_my_avg_seconds": avg_or_none(response_times["me"]),
+        "reply_time_other_avg_seconds": avg_or_none(response_times["other"]),
+        "reply_time_my_count": len(response_times["me"]),
+        "reply_time_other_count": len(response_times["other"]),
+    }
+
+
+def avg_or_none(values: list[float]) -> float | None:
+    return round(sum(values) / len(values), 1) if values else None
+
+
+def median_or_none(values: list[float]) -> float | None:
+    if not values:
+        return None
+    sorted_values = sorted(values)
+    count = len(sorted_values)
+    if count % 2:
+        return round(sorted_values[count // 2], 1)
+    return round((sorted_values[count // 2 - 1] + sorted_values[count // 2]) / 2, 1)
+
+
 def compute_statistics(messages: list[dict], session: dict) -> dict:
     """计算聊天统计数据"""
     if not messages:
@@ -209,29 +321,30 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
         if dt is not None:
             weekday_counts[dt.weekday()] += 1
 
-    # === 对话轮次分析 ===
-    # 定义"对话轮次"：同一人连续发消息算一轮，换人则开启新轮
-    conversation_turns = []
-    current_turn = {"sender": messages[0]["sender"], "msgs": [messages[0]["content"]], "start_time": messages[0]["time_str"]}
-
-    for m in messages[1:]:
-        if m["sender"] != current_turn["sender"]:
-            conversation_turns.append(current_turn)
-            current_turn = {"sender": m["sender"], "msgs": [m["content"]], "start_time": m["time_str"]}
-        else:
-            current_turn["msgs"].append(m["content"])
-    conversation_turns.append(current_turn)
-
-    # 话题发起者统计（每轮对话的第一个发言者）
-    topic_starters = Counter(t["sender"] for t in conversation_turns)
-    # 排除对话的第一轮（可能是任意一方）
-    # 计算非连续对话间隔后的发起者
-    gap_initiated = {"me": 0, "other": 0}
-    for i, turn in enumerate(conversation_turns):
-        if i == 0:
-            continue
-        # 如果两轮之间有较长间隔（>2小时），算作新话题发起
-        # TODO: replace this legacy turn proxy with gap-based session modeling.
+    # === 对话轮次与会话分析 ===
+    conversation_turns = build_conversation_turns(messages)
+    turn_starters = Counter(turn["sender"] for turn in conversation_turns)
+    sessions = build_sessions(messages, gap_hours=DEFAULT_SESSION_GAP_HOURS)
+    session_initiators = Counter(item["initiator"] for item in sessions)
+    session_closers = Counter(item["closer"] for item in sessions)
+    session_message_counts = [item["message_count"] for item in sessions]
+    session_durations = [
+        item["duration_minutes"]
+        for item in sessions
+        if item["duration_minutes"] is not None
+    ]
+    session_reply_times = {
+        "me": [
+            item["reply_time_my_avg_seconds"]
+            for item in sessions
+            if item["reply_time_my_avg_seconds"] is not None
+        ],
+        "other": [
+            item["reply_time_other_avg_seconds"]
+            for item in sessions
+            if item["reply_time_other_avg_seconds"] is not None
+        ],
+    }
 
     # === 主动性分析 ===
     # 谁更常开启新的一天的对话
@@ -290,21 +403,8 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
     sorted_days = sorted(daily_counts.items(), key=lambda x: x[1]["total"], reverse=True)[:10]
     top_days = [{"date": d, "my": c["me"], "other": c["other"], "total": c["total"]} for d, c in sorted_days]
 
-    # === 最近一个月的对话轮次样本 ===
-    recent_turns = conversation_turns[-50:] if len(conversation_turns) > 50 else conversation_turns
-
     # === 深夜对话（23:00-05:00）===
     late_night_msgs = [m for m in messages if message_hour(m) in (23, 0, 1, 2, 3, 4)]
-
-    def avg_or_none(lst):
-        return round(sum(lst) / len(lst), 1) if lst else None
-
-    def median_or_none(lst):
-        if not lst:
-            return None
-        s = sorted(lst)
-        n = len(s)
-        return round(s[n // 2], 1) if n % 2 else round((s[n // 2 - 1] + s[n // 2]) / 2, 1)
 
     return {
         "other_name": other_name,
@@ -330,7 +430,20 @@ def compute_statistics(messages: list[dict], session: dict) -> dict:
         "reply_time_my_count": len(reply_times["me"]),
         "reply_time_other_count": len(reply_times["other"]),
         "conversation_turn_count": len(conversation_turns),
-        "topic_starters": dict(topic_starters),
+        "turn_starters": dict(turn_starters),
+        # Kept for backward compatibility; now means gap-based session initiators.
+        "topic_starters": dict(session_initiators),
+        "session_gap_hours": DEFAULT_SESSION_GAP_HOURS,
+        "session_count": len(sessions),
+        "session_initiators": dict(session_initiators),
+        "session_closers": dict(session_closers),
+        "avg_session_message_count": avg_or_none(session_message_counts),
+        "median_session_message_count": median_or_none(session_message_counts),
+        "avg_session_duration_minutes": avg_or_none(session_durations),
+        "median_session_duration_minutes": median_or_none(session_durations),
+        "session_reply_time_my_avg_seconds": avg_or_none(session_reply_times["me"]),
+        "session_reply_time_other_avg_seconds": avg_or_none(session_reply_times["other"]),
+        "top_sessions": sorted(sessions, key=lambda item: item["message_count"], reverse=True)[:10],
         "monthly_trend": monthly_trend,
         "top_active_days": top_days,
         "late_night_message_count": len(late_night_msgs),
@@ -430,9 +543,25 @@ def format_statistics_report(stats: dict, samples: list[dict], segments: list[li
     report.append(f"- 我的中位回复间隔: {stats['reply_time_my_median_seconds']}秒")
     report.append(f"- 对方中位回复间隔: {stats['reply_time_other_median_seconds']}秒")
 
-    report.append(f"\n## 对话轮次")
+    report.append(f"\n## 对话轮次与会话")
     report.append(f"- 总对话轮次: {stats['conversation_turn_count']}")
-    report.append(f"- 话题发起统计: 我={stats['topic_starters'].get('me',0)}次, 对方={stats['topic_starters'].get('other',0)}次")
+    report.append(f"- 连续发言轮次发起统计: 我={stats['turn_starters'].get('me',0)}次, 对方={stats['turn_starters'].get('other',0)}次")
+    report.append(f"- 会话切分间隔: {stats['session_gap_hours']}小时")
+    report.append(f"- 总会话数: {stats['session_count']}")
+    report.append(f"- 会话发起者: 我={stats['session_initiators'].get('me',0)}次, 对方={stats['session_initiators'].get('other',0)}次")
+    report.append(f"- 会话收尾者: 我={stats['session_closers'].get('me',0)}次, 对方={stats['session_closers'].get('other',0)}次")
+    report.append(f"- 平均每会话消息数: {stats['avg_session_message_count']} 条，中位 {stats['median_session_message_count']} 条")
+    report.append(f"- 平均会话时长: {stats['avg_session_duration_minutes']} 分钟，中位 {stats['median_session_duration_minutes']} 分钟")
+    report.append(f"- 会话内我的平均回复: {stats['session_reply_time_my_avg_seconds']}秒")
+    report.append(f"- 会话内对方平均回复: {stats['session_reply_time_other_avg_seconds']}秒")
+
+    report.append(f"\n## 最活跃会话 TOP 10")
+    for item in stats["top_sessions"]:
+        report.append(
+            f"  会话{item['session_index']}: {item['start_time']} ~ {item['end_time']}，"
+            f"总{item['message_count']}条，我{item['my_count']}条，对方{item['other_count']}条，"
+            f"发起={item['initiator']}，收尾={item['closer']}"
+        )
 
     report.append(f"\n## 月度趋势")
     for mt in stats['monthly_trend']:

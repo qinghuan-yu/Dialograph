@@ -98,6 +98,11 @@ def generate_analysis_prompt(stats: dict, samples: list, segments: list, session
     prompt += f"\n### 主动性指标\n"
     prompt += f"- 每日首条消息: 我={stats['daily_first_msg'].get('me',0)}天, 对方={stats['daily_first_msg'].get('other',0)}天\n"
     prompt += f"- 每日末条消息: 我={stats['daily_last_msg'].get('me',0)}天, 对方={stats['daily_last_msg'].get('other',0)}天\n"
+    prompt += f"- 会话切分间隔: {stats.get('session_gap_hours', 4)}小时\n"
+    prompt += f"- 总会话数: {stats.get('session_count', 0)}\n"
+    prompt += f"- 会话发起者: 我={stats.get('session_initiators', {}).get('me',0)}次, 对方={stats.get('session_initiators', {}).get('other',0)}次\n"
+    prompt += f"- 会话收尾者: 我={stats.get('session_closers', {}).get('me',0)}次, 对方={stats.get('session_closers', {}).get('other',0)}次\n"
+    prompt += f"- 平均每会话消息数: {stats.get('avg_session_message_count')} 条, 中位 {stats.get('median_session_message_count')} 条\n"
 
     prompt += f"\n### 消息特征\n"
     prompt += f"- 我的平均文本消息长度: {stats['avg_my_msg_length']} 字\n"
@@ -109,6 +114,8 @@ def generate_analysis_prompt(stats: dict, samples: list, segments: list, session
     prompt += f"\n### 回复速度\n"
     prompt += f"- 我平均回复: {stats['reply_time_my_avg_seconds']}秒 (中位{stats['reply_time_my_median_seconds']}秒)\n"
     prompt += f"- 对方平均回复: {stats['reply_time_other_avg_seconds']}秒 (中位{stats['reply_time_other_median_seconds']}秒)\n"
+    prompt += f"- 会话内我平均回复: {stats.get('session_reply_time_my_avg_seconds')}秒\n"
+    prompt += f"- 会话内对方平均回复: {stats.get('session_reply_time_other_avg_seconds')}秒\n"
 
     prompt += f"\n### 月度趋势\n"
     for mt in stats['monthly_trend']:
