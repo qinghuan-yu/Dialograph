@@ -1,0 +1,30 @@
+# Secrets and local environment
+.env
+.venv/
+venv/
+env/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Local analysis data and generated reports
+# These may contain private conversations or model outputs.
+talks/
+analysis/
+
+# CodeGraph local index
+.codegraph/*.db
+.codegraph/*.db-shm
+.codegraph/*.db-wal
+
+# OS/editor noise
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+
