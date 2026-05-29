@@ -99,6 +99,12 @@ python agent/run_workflow.py 名称关键词 --force-persona
 python agent/run_workflow.py --chunk-size 900 --chunk-max-bytes 80000
 ```
 
+从未完成的 run 继续：
+
+```bash
+python agent/run_workflow.py 名称关键词 --resume-run 20260529-153000
+```
+
 如果只想生成预处理统计和 prompt，可以运行：
 
 ```bash
@@ -203,6 +209,24 @@ talks/*.json
 - `分析_{对象名}.md`
 - `人物侧写_{对象名}.md`
 
+### 6. Run 管理与失败恢复
+
+完整工作流会先把本次运行写入：
+
+```text
+analysis/临时文件/{对象名}/runs/{run_id}/
+```
+
+只有当关系分析成功生成后，才会把本次 run 的分块、结构化证据、阶段总结和关系报告同步到旧的兼容路径。这样中途失败不会破坏上一次成功结果。
+
+每个成功 run 会更新：
+
+```text
+analysis/临时文件/{对象名}/latest_run.json
+```
+
+如果某次运行在分块阶段中断，可以使用 `--resume-run {run_id}` 复用该 run 中已经完成的 `chunk_*.md` 和 `evidence_*.json`，继续后续分块与最终报告生成。
+
 ## 输出位置
 
 生成结果默认写入 `analysis/`：
@@ -219,6 +243,8 @@ talks/*.json
 - `临时文件/{对象名}/分块覆盖清单_{对象名}.json`：全量读取覆盖校验
 - `临时文件/{对象名}/阶段总结_{对象名}.md`：中间证据总结
 - `临时文件/{对象名}/结构化证据摘要_{对象名}.md`：最终报告使用的证据摘要
+- `临时文件/{对象名}/runs/{run_id}/`：单次运行的完整中间产物
+- `临时文件/{对象名}/latest_run.json`：最近一次成功提升的 run 指针
 
 `talks/` 和 `analysis/` 默认被 `.gitignore` 忽略，以避免把私人对话和分析产物提交到版本库。
 

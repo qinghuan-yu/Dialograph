@@ -6,7 +6,9 @@ import argparse
 import http.client
 import json
 import re
+import shutil
 import sys
+from datetime import datetime
 from pathlib import Path
 from urllib import error, request
 
@@ -76,6 +78,11 @@ def parse_args() -> argparse.Namespace:
         "--force-persona",
         action="store_true",
         help="即使人物侧写已存在，也重新生成人物侧写",
+    )
+    parser.add_argument(
+        "--resume-run",
+        default=None,
+        help="从 analysis/临时文件/{对象名}/runs/{run_id} 继续未完成的完整工作流；通常配合目标名称使用",
     )
     return parser.parse_args()
 
@@ -356,6 +363,95 @@ def load_evidence_summary(artifacts: dict) -> str:
     if summary_file and summary_file.exists():
         return summary_file.read_text(encoding="utf-8").strip()
     return "未找到结构化证据摘要；请主要依据阶段总结和覆盖说明，并降低细粒度结论的确定性。"
+
+
+def make_run_id() -> str:
+    return datetime.now().strftime("%Y%m%d-%H%M%S")
+
+
+def build_run_paths(artifacts: dict, run_id: str | None = None) -> dict:
+    run_id = run_id or make_run_id()
+    run_dir = artifacts["runs_dir"] / run_id
+    return {
+        "run_id": run_id,
+        "run_dir": run_dir,
+        "chunk_dir": run_dir / "分块分析",
+        "evidence_dir": run_dir / "结构化证据",
+        "chunk_manifest_file": run_dir / f"分块覆盖清单_{artifacts['safe_name']}.json",
+        "coverage_summary_file": run_dir / f"全量覆盖说明_{artifacts['safe_name']}.md",
+        "evidence_ledger_file": run_dir / f"结构化证据总表_{artifacts['safe_name']}.json",
+        "evidence_summary_file": run_dir / f"结构化证据摘要_{artifacts['safe_name']}.md",
+        "phase_summary_file": run_dir / f"阶段总结_{artifacts['safe_name']}.md",
+        "analysis_file": run_dir / f"分析_{artifacts['safe_name']}.md",
+        "analysis_meta_file": run_dir / f"报告来源_分析_{artifacts['safe_name']}.json",
+        "run_metadata_file": run_dir / "run_metadata.json",
+    }
+
+
+def write_run_metadata(artifacts: dict, run_paths: dict, status: str, extra: dict | None = None) -> None:
+    run_paths["run_dir"].mkdir(parents=True, exist_ok=True)
+    metadata = {
+        "run_id": run_paths["run_id"],
+        "status": status,
+        "name": artifacts["name"],
+        "safe_name": artifacts["safe_name"],
+        "chat_file": str(artifacts["chat_file"]),
+        "message_count": artifacts["message_count"],
+        "updated_at": datetime.now().isoformat(timespec="seconds"),
+    }
+    if extra:
+        metadata.update(extra)
+    run_paths["run_metadata_file"].write_text(
+        json.dumps(metadata, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def copy_file(src: Path, dst: Path) -> None:
+    if not src.exists():
+        return
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src, dst)
+
+
+def copy_dir(src: Path, dst: Path) -> None:
+    if not src.exists():
+        return
+    if dst.exists():
+        shutil.rmtree(dst)
+    dst.parent.mkdir(parents=True, exist_ok=True)
+    shutil.copytree(src, dst)
+
+
+def promote_successful_run(artifacts: dict, run_paths: dict) -> None:
+    copy_dir(run_paths["chunk_dir"], artifacts["chunk_dir"])
+    copy_dir(run_paths["evidence_dir"], artifacts["evidence_dir"])
+    copy_file(run_paths["chunk_manifest_file"], artifacts["chunk_manifest_file"])
+    copy_file(run_paths["coverage_summary_file"], artifacts["coverage_summary_file"])
+    copy_file(run_paths["evidence_ledger_file"], artifacts["evidence_ledger_file"])
+    copy_file(run_paths["evidence_summary_file"], artifacts["evidence_summary_file"])
+    copy_file(run_paths["phase_summary_file"], artifacts["phase_summary_file"])
+    copy_file(run_paths["analysis_file"], artifacts["analysis_file"])
+    copy_file(run_paths["analysis_meta_file"], artifacts["analysis_meta_file"])
+    artifacts["latest_run_file"].write_text(
+        json.dumps({
+            "run_id": run_paths["run_id"],
+            "run_dir": str(run_paths["run_dir"]),
+            "analysis_file": str(artifacts["analysis_file"]),
+            "promoted_at": datetime.now().isoformat(timespec="seconds"),
+        }, ensure_ascii=False, indent=2),
+        encoding="utf-8",
+    )
+
+
+def load_existing_chunk_result(run_paths: dict, chunk_index: int) -> tuple[str, dict] | None:
+    chunk_file = run_paths["chunk_dir"] / f"chunk_{chunk_index:03d}.md"
+    evidence_file = run_paths["evidence_dir"] / f"evidence_{chunk_index:03d}.json"
+    if not chunk_file.exists() or not evidence_file.exists():
+        return None
+    summary = chunk_file.read_text(encoding="utf-8").strip()
+    evidence = json.loads(evidence_file.read_text(encoding="utf-8"))
+    return summary, evidence
 
 
 def format_stats_summary(stats: dict) -> str:
@@ -727,6 +823,8 @@ def build_artifacts(
     persona_meta_file = support_dir / f"报告来源_人物侧写_{safe_name}.json"
     chunk_dir = support_dir / "分块分析"
     evidence_dir = support_dir / "结构化证据"
+    runs_dir = support_dir / "runs"
+    latest_run_file = support_dir / "latest_run.json"
     phase_summary_file = support_dir / f"阶段总结_{safe_name}.md"
     chunk_manifest_file = support_dir / f"分块覆盖清单_{safe_name}.json"
     coverage_summary_file = support_dir / f"全量覆盖说明_{safe_name}.md"
@@ -771,6 +869,8 @@ def build_artifacts(
         "persona_meta_file": persona_meta_file,
         "chunk_dir": chunk_dir,
         "evidence_dir": evidence_dir,
+        "runs_dir": runs_dir,
+        "latest_run_file": latest_run_file,
         "phase_summary_file": phase_summary_file,
         "chunk_manifest_file": chunk_manifest_file,
         "coverage_summary_file": coverage_summary_file,
@@ -918,45 +1018,53 @@ def run_single_workflow(
     timeout: int,
     chunk_size: int = CHUNK_MESSAGE_COUNT,
     chunk_max_bytes: int = CHUNK_MAX_TRANSCRIPT_BYTES,
+    resume_run_id: str | None = None,
 ) -> dict:
-    chunk_dir = artifacts["chunk_dir"]
-    evidence_dir = artifacts["evidence_dir"]
+    run_paths = build_run_paths(artifacts, resume_run_id)
+    chunk_dir = run_paths["chunk_dir"]
+    evidence_dir = run_paths["evidence_dir"]
+    write_run_metadata(artifacts, run_paths, "running", {
+        "chunk_size": chunk_size,
+        "chunk_max_bytes": chunk_max_bytes,
+        "resumed": resume_run_id is not None,
+    })
     chunk_dir.mkdir(parents=True, exist_ok=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
-    for old_chunk in chunk_dir.glob("chunk_*.md"):
-        old_chunk.unlink()
-    for old_evidence in evidence_dir.glob("evidence_*.json"):
-        old_evidence.unlink()
 
     chunk_sets = chunk_messages(artifacts["messages"], chunk_size, chunk_max_bytes)
     validate_chunk_coverage(artifacts["messages"], chunk_sets)
     chunk_manifest = build_chunk_manifest(chunk_sets)
     coverage_summary = format_coverage_summary(artifacts["stats"], chunk_manifest)
-    artifacts["chunk_manifest_file"].write_text(
+    run_paths["chunk_manifest_file"].write_text(
         json.dumps(chunk_manifest, ensure_ascii=False, indent=2),
         encoding="utf-8",
     )
-    artifacts["coverage_summary_file"].write_text(coverage_summary + "\n", encoding="utf-8")
+    run_paths["coverage_summary_file"].write_text(coverage_summary + "\n", encoding="utf-8")
     print(f"- 分块数: {len(chunk_sets)}")
     print(f"- 分块覆盖: {sum(item['message_count'] for item in chunk_manifest)}/{artifacts['message_count']} 条")
 
     chunk_summaries = []
     evidence_docs = []
     for chunk_index, chunk in enumerate(chunk_sets, start=1):
-        print(f"- 分析分块 {chunk_index}/{len(chunk_sets)}")
-        prompt = build_chunk_prompt(artifacts["stats"], chunk_index, len(chunk_sets), chunk)
-        summary = call_llm_with_retry(config, skill_prompt, prompt, timeout, max_tokens=3000)
-        chunk_file = chunk_dir / f"chunk_{chunk_index:03d}.md"
-        chunk_file.write_text(summary.strip() + "\n", encoding="utf-8")
+        existing = load_existing_chunk_result(run_paths, chunk_index) if resume_run_id else None
+        if existing:
+            print(f"- 复用已完成分块 {chunk_index}/{len(chunk_sets)}")
+            summary, evidence = existing
+        else:
+            print(f"- 分析分块 {chunk_index}/{len(chunk_sets)}")
+            prompt = build_chunk_prompt(artifacts["stats"], chunk_index, len(chunk_sets), chunk)
+            summary = call_llm_with_retry(config, skill_prompt, prompt, timeout, max_tokens=3000)
+            chunk_file = chunk_dir / f"chunk_{chunk_index:03d}.md"
+            chunk_file.write_text(summary.strip() + "\n", encoding="utf-8")
+            evidence = normalize_chunk_evidence(summary, chunk_manifest[chunk_index - 1])
+            write_chunk_evidence(evidence_dir, evidence)
         chunk_summaries.append(summary.strip())
-        evidence = normalize_chunk_evidence(summary, chunk_manifest[chunk_index - 1])
-        write_chunk_evidence(evidence_dir, evidence)
         evidence_docs.append(evidence)
 
     evidence_summary = write_evidence_ledger(
         evidence_docs,
-        artifacts["evidence_ledger_file"],
-        artifacts["evidence_summary_file"],
+        run_paths["evidence_ledger_file"],
+        run_paths["evidence_summary_file"],
     )
 
     phase_summaries = merge_summaries_if_needed(
@@ -966,7 +1074,7 @@ def run_single_workflow(
         config,
         timeout,
     )
-    artifacts["phase_summary_file"].write_text("\n\n".join(phase_summaries).strip() + "\n", encoding="utf-8")
+    run_paths["phase_summary_file"].write_text("\n\n".join(phase_summaries).strip() + "\n", encoding="utf-8")
 
     final_prompt = build_final_prompt(
         artifacts["name"],
@@ -978,28 +1086,36 @@ def run_single_workflow(
     print("- 综合全部分块，生成最终报告...")
     report = call_llm_with_retry(config, skill_prompt, final_prompt, timeout, max_tokens=4200)
     write_report(
-        artifacts["analysis_file"],
-        artifacts["analysis_meta_file"],
+        run_paths["analysis_file"],
+        run_paths["analysis_meta_file"],
         report,
         source="api",
         script_name="agent/run_workflow.py",
         model=config.model,
-        note=f"全量分块覆盖 {artifacts['message_count']} 条有效消息，共 {len(chunk_sets)} 个分块",
+        note=f"全量分块覆盖 {artifacts['message_count']} 条有效消息，共 {len(chunk_sets)} 个分块，run_id={run_paths['run_id']}",
         extra_metadata={
+            "run_id": run_paths["run_id"],
             "message_count": artifacts["message_count"],
             "chunk_count": len(chunk_sets),
-            "chunk_manifest_file": str(artifacts["chunk_manifest_file"]),
-            "coverage_summary_file": str(artifacts["coverage_summary_file"]),
-            "evidence_ledger_file": str(artifacts["evidence_ledger_file"]),
-            "evidence_summary_file": str(artifacts["evidence_summary_file"]),
-            "phase_summary_file": str(artifacts["phase_summary_file"]),
+            "chunk_manifest_file": str(run_paths["chunk_manifest_file"]),
+            "coverage_summary_file": str(run_paths["coverage_summary_file"]),
+            "evidence_ledger_file": str(run_paths["evidence_ledger_file"]),
+            "evidence_summary_file": str(run_paths["evidence_summary_file"]),
+            "phase_summary_file": str(run_paths["phase_summary_file"]),
             "full_transcript_file": str(artifacts["full_transcript_file"]),
             "diagnostics_file": str(artifacts["diagnostics_file"]),
         },
     )
+    promote_successful_run(artifacts, run_paths)
+    write_run_metadata(artifacts, run_paths, "success", {
+        "chunk_count": len(chunk_sets),
+        "analysis_file": str(artifacts["analysis_file"]),
+        "evidence_ledger_file": str(artifacts["evidence_ledger_file"]),
+    })
     return {
         "name": artifacts["name"],
         "status": "success",
+        "run_id": run_paths["run_id"],
         "analysis_file": str(artifacts["analysis_file"]),
         "evidence_ledger_file": str(artifacts["evidence_ledger_file"]),
         "chunk_count": len(chunk_sets),
@@ -1108,6 +1224,7 @@ def main() -> int:
             )
             need_analysis = (
                 args.force
+                or args.resume_run is not None
                 or not initial_artifacts["analysis_file"].exists()
                 or not initial_artifacts["phase_summary_file"].exists()
                 or not initial_artifacts["coverage_summary_file"].exists()
@@ -1149,6 +1266,7 @@ def main() -> int:
                     timeout=args.timeout,
                     chunk_size=args.chunk_size,
                     chunk_max_bytes=args.chunk_max_bytes,
+                    resume_run_id=args.resume_run,
                 )
             else:
                 print("- 复用已存在的关系分析、阶段总结与覆盖说明")
