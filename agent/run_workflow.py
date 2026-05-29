@@ -8,6 +8,7 @@ import json
 import re
 import shutil
 import sys
+import time
 from datetime import datetime
 from pathlib import Path
 from urllib import error, request
@@ -31,7 +32,10 @@ from run_analysis import generate_analysis_prompt  # noqa: E402
 
 
 CHUNK_MESSAGE_COUNT = 1200
-CHUNK_MAX_TRANSCRIPT_BYTES = 90000
+CHUNK_MAX_TRANSCRIPT_BYTES = 45000
+CHUNK_MIN_TRANSCRIPT_BYTES = 12000
+CHUNK_AUTO_SHRINK_FACTOR = 0.55
+CHUNK_AUTO_SHRINK_MAX_RESTARTS = 3
 CHUNK_BATCH_SIZE = 8
 SUMMARY_MAX_BYTES = 120000
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
@@ -73,6 +77,11 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=CHUNK_MAX_TRANSCRIPT_BYTES,
         help=f"每个分块原文的近似最大字节数，默认 {CHUNK_MAX_TRANSCRIPT_BYTES}",
+    )
+    parser.add_argument(
+        "--no-auto-shrink",
+        action="store_true",
+        help="关闭 LLM 连接断开/413/超时后的自动缩小分块重跑",
     )
     parser.add_argument(
         "--force-persona",
@@ -969,6 +978,7 @@ def call_llm_with_retry(
     timeout: int,
     max_tokens: int,
     max_attempts: int = 3,
+    retry_sleep_seconds: float = 3.0,
 ) -> str:
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
@@ -988,6 +998,7 @@ def call_llm_with_retry(
             last_error = exc
             if should_retry_with_smaller_prompt(exc) and attempt < max_attempts:
                 print(f"- 请求失败，准备重试: {exc}")
+                time.sleep(retry_sleep_seconds)
                 continue
             raise
     if last_error is not None:
@@ -1122,6 +1133,69 @@ def run_single_workflow(
         "sample_count": artifacts["sample_count"],
         "segment_count": artifacts["segment_count"],
     }
+
+
+def shrink_chunk_limits(chunk_size: int, chunk_max_bytes: int) -> tuple[int, int]:
+    next_chunk_size = max(1, int(chunk_size * CHUNK_AUTO_SHRINK_FACTOR))
+    next_chunk_max_bytes = max(CHUNK_MIN_TRANSCRIPT_BYTES, int(chunk_max_bytes * CHUNK_AUTO_SHRINK_FACTOR))
+    if next_chunk_size == chunk_size and chunk_size > 1:
+        next_chunk_size = chunk_size - 1
+    if next_chunk_max_bytes == chunk_max_bytes and chunk_max_bytes > CHUNK_MIN_TRANSCRIPT_BYTES:
+        next_chunk_max_bytes = max(CHUNK_MIN_TRANSCRIPT_BYTES, chunk_max_bytes - 1)
+    return next_chunk_size, next_chunk_max_bytes
+
+
+def run_single_workflow_with_auto_shrink(
+    artifacts: dict,
+    skill_prompt: str,
+    config,
+    timeout: int,
+    chunk_size: int = CHUNK_MESSAGE_COUNT,
+    chunk_max_bytes: int = CHUNK_MAX_TRANSCRIPT_BYTES,
+    resume_run_id: str | None = None,
+    auto_shrink: bool = True,
+) -> dict:
+    current_chunk_size = chunk_size
+    current_chunk_max_bytes = chunk_max_bytes
+    restart_count = 0
+
+    while True:
+        try:
+            return run_single_workflow(
+                artifacts=artifacts,
+                skill_prompt=skill_prompt,
+                config=config,
+                timeout=timeout,
+                chunk_size=current_chunk_size,
+                chunk_max_bytes=current_chunk_max_bytes,
+                resume_run_id=resume_run_id if restart_count == 0 else None,
+            )
+        except Exception as exc:  # noqa: BLE001
+            can_shrink = (
+                auto_shrink
+                and resume_run_id is None
+                and should_retry_with_smaller_prompt(exc)
+                and restart_count < CHUNK_AUTO_SHRINK_MAX_RESTARTS
+                and current_chunk_max_bytes > CHUNK_MIN_TRANSCRIPT_BYTES
+            )
+            if not can_shrink:
+                raise
+
+            next_chunk_size, next_chunk_max_bytes = shrink_chunk_limits(
+                current_chunk_size,
+                current_chunk_max_bytes,
+            )
+            if next_chunk_size == current_chunk_size and next_chunk_max_bytes == current_chunk_max_bytes:
+                raise
+
+            restart_count += 1
+            print(
+                "- 检测到可恢复的 LLM 请求失败，自动缩小分块后重跑本对象: "
+                f"chunk_size {current_chunk_size}->{next_chunk_size}, "
+                f"chunk_max_bytes {current_chunk_max_bytes}->{next_chunk_max_bytes}"
+            )
+            current_chunk_size = next_chunk_size
+            current_chunk_max_bytes = next_chunk_max_bytes
 
 
 def load_phase_summaries(artifacts: dict) -> list[str]:
@@ -1259,7 +1333,7 @@ def main() -> int:
                 )
             if need_analysis:
                 print("- 生成完整预处理文件、全量分块分析材料与关系建模报告...")
-                result = run_single_workflow(
+                result = run_single_workflow_with_auto_shrink(
                     artifacts=initial_artifacts,
                     skill_prompt=skill_prompt,
                     config=config,
@@ -1267,6 +1341,7 @@ def main() -> int:
                     chunk_size=args.chunk_size,
                     chunk_max_bytes=args.chunk_max_bytes,
                     resume_run_id=args.resume_run,
+                    auto_shrink=not args.no_auto_shrink,
                 )
             else:
                 print("- 复用已存在的关系分析、阶段总结与覆盖说明")
