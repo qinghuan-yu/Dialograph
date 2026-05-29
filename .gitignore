@@ -19,10 +19,7 @@ analysis/
 LONG_TERM_OPTIMIZATION_PLAN.md
 
 # CodeGraph local index
-.codegraph/*.db
-.codegraph/*.db-shm
-.codegraph/*.db-wal
-.codegraph/*.pid
+.codegraph/
 
 # OS/editor noise
 .DS_Store
