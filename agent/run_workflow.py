@@ -40,6 +40,8 @@ CHUNK_MAX_PROMPT_BYTES = 32000
 CHUNK_MIN_PROMPT_BYTES = 18000
 CHUNK_BATCH_SIZE = 8
 SUMMARY_MAX_BYTES = 120000
+MERGE_MAX_PROMPT_BYTES = 30000
+MERGE_MAX_OUTPUT_TOKENS = 1600
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
 EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = 60
 
@@ -1093,18 +1095,65 @@ def call_llm_with_retry(
     raise RuntimeError("LLM 调用失败")
 
 
+def text_bytes(text: str) -> int:
+    return len(text.encode("utf-8"))
+
+
+def build_merge_batches(name: str, summaries: list[str], max_prompt_bytes: int = MERGE_MAX_PROMPT_BYTES) -> list[list[str]]:
+    if max_prompt_bytes <= 0:
+        raise ValueError("max_prompt_bytes 必须大于 0")
+
+    batches = []
+    current = []
+    for summary in summaries:
+        candidate = [*current, summary]
+        candidate_prompt = build_merge_prompt(name, 1, 1, candidate)
+        if current and text_bytes(candidate_prompt) > max_prompt_bytes:
+            batches.append(current)
+            current = [summary]
+        else:
+            current = candidate
+    if current:
+        batches.append(current)
+    return batches
+
+
 def merge_summaries_if_needed(name: str, summaries: list[str], skill_prompt: str, config, timeout: int) -> list[str]:
     current = summaries
     merge_round = 1
-    while len("\n\n".join(current).encode("utf-8")) > SUMMARY_MAX_BYTES and len(current) > 1:
+    while text_bytes("\n\n".join(current)) > SUMMARY_MAX_BYTES and len(current) > 1:
+        before_bytes = text_bytes("\n\n".join(current))
         merged = []
-        total_batches = (len(current) + CHUNK_BATCH_SIZE - 1) // CHUNK_BATCH_SIZE
-        print(f"- 阶段总结过长，执行第 {merge_round} 轮压缩合并，共 {total_batches} 批")
-        for batch_index in range(total_batches):
-            batch = current[batch_index * CHUNK_BATCH_SIZE:(batch_index + 1) * CHUNK_BATCH_SIZE]
-            prompt = build_merge_prompt(name, batch_index + 1, total_batches, batch)
-            merged.append(call_llm_with_retry(config, skill_prompt, prompt, timeout, max_tokens=2200))
+        batches = build_merge_batches(name, current)
+        total_batches = len(batches)
+        print(
+            f"- 阶段总结过长，执行第 {merge_round} 轮压缩合并，共 {total_batches} 批，"
+            f"合并前 {before_bytes} bytes",
+            flush=True,
+        )
+        for batch_index, batch in enumerate(batches, start=1):
+            prompt = build_merge_prompt(name, batch_index, total_batches, batch)
+            prompt_bytes = text_bytes(prompt)
+            print(
+                f"- 合并批次 {batch_index}/{total_batches}: "
+                f"{len(batch)} 个分块总结，prompt {prompt_bytes} bytes",
+                flush=True,
+            )
+            merged_summary = call_llm_with_retry(
+                config,
+                skill_prompt,
+                prompt,
+                timeout,
+                max_tokens=MERGE_MAX_OUTPUT_TOKENS,
+            )
+            print(f"- 合并批次 {batch_index}/{total_batches} 完成: {text_bytes(merged_summary)} bytes", flush=True)
+            merged.append(merged_summary)
         current = merged
+        after_bytes = text_bytes("\n\n".join(current))
+        print(f"- 第 {merge_round} 轮压缩完成: {before_bytes} -> {after_bytes} bytes", flush=True)
+        if len(current) >= len(batches) and after_bytes >= before_bytes:
+            print("- 阶段总结压缩未变短，停止继续合并以避免死循环", flush=True)
+            break
         merge_round += 1
     return current
 
