@@ -32,10 +32,12 @@ from run_analysis import generate_analysis_prompt  # noqa: E402
 
 
 CHUNK_MESSAGE_COUNT = 1200
-CHUNK_MAX_TRANSCRIPT_BYTES = 45000
+CHUNK_MAX_TRANSCRIPT_BYTES = 18000
 CHUNK_MIN_TRANSCRIPT_BYTES = 12000
 CHUNK_AUTO_SHRINK_FACTOR = 0.55
 CHUNK_AUTO_SHRINK_MAX_RESTARTS = 3
+CHUNK_MAX_PROMPT_BYTES = 32000
+CHUNK_MIN_PROMPT_BYTES = 18000
 CHUNK_BATCH_SIZE = 8
 SUMMARY_MAX_BYTES = 120000
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
@@ -77,6 +79,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=CHUNK_MAX_TRANSCRIPT_BYTES,
         help=f"每个分块原文的近似最大字节数，默认 {CHUNK_MAX_TRANSCRIPT_BYTES}",
+    )
+    parser.add_argument(
+        "--chunk-max-prompt-bytes",
+        type=int,
+        default=CHUNK_MAX_PROMPT_BYTES,
+        help=f"每个分块实际提示词的近似最大字节数，默认 {CHUNK_MAX_PROMPT_BYTES}",
     )
     parser.add_argument(
         "--no-auto-shrink",
@@ -165,6 +173,31 @@ def validate_chunk_coverage(messages: list[dict], chunk_sets: list[list[dict]]) 
         return
     if not chunk_sets or chunk_sets[0][0] != messages[0] or chunk_sets[-1][-1] != messages[-1]:
         raise ValueError("分块没有覆盖原始消息首尾，终止以避免生成不完整报告")
+
+
+def split_chunks_by_prompt_budget(
+    stats: dict,
+    chunk_sets: list[list[dict]],
+    max_prompt_bytes: int,
+) -> list[list[dict]]:
+    if max_prompt_bytes <= 0:
+        raise ValueError("chunk_max_prompt_bytes 必须大于 0")
+
+    result = []
+    queue = list(chunk_sets)
+    while queue:
+        chunk = queue.pop(0)
+        prompt_bytes = len(build_chunk_prompt(stats, 1, 1, chunk).encode("utf-8"))
+        if prompt_bytes <= max_prompt_bytes or len(chunk) <= 1:
+            result.append(chunk)
+            continue
+
+        midpoint = len(chunk) // 2
+        left = chunk[:midpoint]
+        right = chunk[midpoint:]
+        queue.insert(0, right)
+        queue.insert(0, left)
+    return result
 
 
 def format_coverage_summary(stats: dict, chunk_manifest: list[dict]) -> str:
@@ -617,6 +650,60 @@ JSON 必须是合法 JSON，不要写注释，不要使用 Markdown 表格。
 """
 
 
+def build_chunk_prompt(stats: dict, chunk_index: int, total_chunks: int, chunk: list[dict]) -> str:
+    other_name = stats["other_name"]
+    transcript = "\n".join(format_message_line(message, other_name) for message in chunk)
+    return f"""请阅读下面这个按时间顺序连续截取的聊天分块，只分析本分块，不下全局定论。
+
+分块: {chunk_index}/{total_chunks}
+时间: {chunk[0]['time_str']} ~ {chunk[-1]['time_str']}
+消息数: {len(chunk)}
+
+输出要求：
+1. 先给 Markdown 分析，严格区分【事实】【推断】【假设】【存疑】。
+2. 覆盖三层：事件、关系建模信号、人物建模信号。
+3. 每个重要判断尽量带时间点、原话或上下文；优先写反证、边界、语气变化、主动/收束。
+4. 不预设对方性别、关系目标或恋爱/暧昧前提；亲密或暧昧只在证据支持时作为可选模型。
+5. 控制篇幅，避免复述全部聊天；聚焦最能支撑或反驳模型的证据。
+
+Markdown 结构：
+## 分块 {chunk_index}
+### 时段概览
+### 关键证据
+### 互动模式观察
+### 关系建模信号
+### 人物建模信号
+### 仍需后文验证的问题
+
+最后必须追加一个合法 fenced JSON，字段必须齐全，数组可为空：
+```json
+{{
+  "schema_version": "{EVIDENCE_SCHEMA_VERSION}",
+  "chunk_index": {chunk_index},
+  "time_range": {{"start": "{chunk[0]['time_str']}", "end": "{chunk[-1]['time_str']}"}},
+  "events": [
+    {{"time": "时间或范围", "summary": "事件概括", "evidence": "原话或上下文", "confidence": "high|medium|low"}}
+  ],
+  "relation_signals": [
+    {{"model": "普通熟人|普通朋友|较亲近朋友|工具性/事务性关系|社群/同学/同事式关系|情绪支持或依赖|礼貌维持|低成本社交|亲密或暧昧可能|其他", "direction": "support|against|mixed", "signal": "关系信号", "evidence": "原话或上下文", "confidence": "high|medium|low"}}
+  ],
+  "persona_signals": [
+    {{"trait": "人物特征维度", "signal": "人物建模信号", "evidence": "原话或上下文", "stability": "local|repeated|unclear", "confidence": "high|medium|low"}}
+  ],
+  "counter_evidence": [
+    {{"against": "反驳哪个判断", "evidence": "反证原话或上下文", "confidence": "high|medium|low"}}
+  ],
+  "uncertainties": [
+    {{"question": "仍不能判断的问题", "reason": "证据不足的原因"}}
+  ]
+}}
+```
+
+聊天分块原文：
+{transcript}
+"""
+
+
 def build_merge_prompt(name: str, batch_index: int, total_batches: int, summaries: list[str]) -> str:
     joined = "\n\n".join(summaries)
     return f"""请把以下分块分析合并成一份阶段总结，服务于最终关系分析。
@@ -1029,6 +1116,7 @@ def run_single_workflow(
     timeout: int,
     chunk_size: int = CHUNK_MESSAGE_COUNT,
     chunk_max_bytes: int = CHUNK_MAX_TRANSCRIPT_BYTES,
+    chunk_max_prompt_bytes: int = CHUNK_MAX_PROMPT_BYTES,
     resume_run_id: str | None = None,
 ) -> dict:
     run_paths = build_run_paths(artifacts, resume_run_id)
@@ -1037,12 +1125,14 @@ def run_single_workflow(
     write_run_metadata(artifacts, run_paths, "running", {
         "chunk_size": chunk_size,
         "chunk_max_bytes": chunk_max_bytes,
+        "chunk_max_prompt_bytes": chunk_max_prompt_bytes,
         "resumed": resume_run_id is not None,
     })
     chunk_dir.mkdir(parents=True, exist_ok=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
     chunk_sets = chunk_messages(artifacts["messages"], chunk_size, chunk_max_bytes)
+    chunk_sets = split_chunks_by_prompt_budget(artifacts["stats"], chunk_sets, chunk_max_prompt_bytes)
     validate_chunk_coverage(artifacts["messages"], chunk_sets)
     chunk_manifest = build_chunk_manifest(chunk_sets)
     coverage_summary = format_coverage_summary(artifacts["stats"], chunk_manifest)
@@ -1064,7 +1154,8 @@ def run_single_workflow(
         else:
             print(f"- 分析分块 {chunk_index}/{len(chunk_sets)}")
             prompt = build_chunk_prompt(artifacts["stats"], chunk_index, len(chunk_sets), chunk)
-            summary = call_llm_with_retry(config, skill_prompt, prompt, timeout, max_tokens=3000)
+            print(f"- 分块提示词大小: {len(prompt.encode('utf-8'))} bytes")
+            summary = call_llm_with_retry(config, skill_prompt, prompt, timeout, max_tokens=2200)
             chunk_file = chunk_dir / f"chunk_{chunk_index:03d}.md"
             chunk_file.write_text(summary.strip() + "\n", encoding="utf-8")
             evidence = normalize_chunk_evidence(summary, chunk_manifest[chunk_index - 1])
@@ -1145,6 +1236,13 @@ def shrink_chunk_limits(chunk_size: int, chunk_max_bytes: int) -> tuple[int, int
     return next_chunk_size, next_chunk_max_bytes
 
 
+def shrink_prompt_limit(chunk_max_prompt_bytes: int) -> int:
+    next_limit = max(CHUNK_MIN_PROMPT_BYTES, int(chunk_max_prompt_bytes * CHUNK_AUTO_SHRINK_FACTOR))
+    if next_limit == chunk_max_prompt_bytes and chunk_max_prompt_bytes > CHUNK_MIN_PROMPT_BYTES:
+        next_limit = max(CHUNK_MIN_PROMPT_BYTES, chunk_max_prompt_bytes - 1)
+    return next_limit
+
+
 def run_single_workflow_with_auto_shrink(
     artifacts: dict,
     skill_prompt: str,
@@ -1152,11 +1250,13 @@ def run_single_workflow_with_auto_shrink(
     timeout: int,
     chunk_size: int = CHUNK_MESSAGE_COUNT,
     chunk_max_bytes: int = CHUNK_MAX_TRANSCRIPT_BYTES,
+    chunk_max_prompt_bytes: int = CHUNK_MAX_PROMPT_BYTES,
     resume_run_id: str | None = None,
     auto_shrink: bool = True,
 ) -> dict:
     current_chunk_size = chunk_size
     current_chunk_max_bytes = chunk_max_bytes
+    current_chunk_max_prompt_bytes = chunk_max_prompt_bytes
     restart_count = 0
 
     while True:
@@ -1168,6 +1268,7 @@ def run_single_workflow_with_auto_shrink(
                 timeout=timeout,
                 chunk_size=current_chunk_size,
                 chunk_max_bytes=current_chunk_max_bytes,
+                chunk_max_prompt_bytes=current_chunk_max_prompt_bytes,
                 resume_run_id=resume_run_id if restart_count == 0 else None,
             )
         except Exception as exc:  # noqa: BLE001
@@ -1176,7 +1277,10 @@ def run_single_workflow_with_auto_shrink(
                 and resume_run_id is None
                 and should_retry_with_smaller_prompt(exc)
                 and restart_count < CHUNK_AUTO_SHRINK_MAX_RESTARTS
-                and current_chunk_max_bytes > CHUNK_MIN_TRANSCRIPT_BYTES
+                and (
+                    current_chunk_max_bytes > CHUNK_MIN_TRANSCRIPT_BYTES
+                    or current_chunk_max_prompt_bytes > CHUNK_MIN_PROMPT_BYTES
+                )
             )
             if not can_shrink:
                 raise
@@ -1185,17 +1289,24 @@ def run_single_workflow_with_auto_shrink(
                 current_chunk_size,
                 current_chunk_max_bytes,
             )
-            if next_chunk_size == current_chunk_size and next_chunk_max_bytes == current_chunk_max_bytes:
+            next_chunk_max_prompt_bytes = shrink_prompt_limit(current_chunk_max_prompt_bytes)
+            if (
+                next_chunk_size == current_chunk_size
+                and next_chunk_max_bytes == current_chunk_max_bytes
+                and next_chunk_max_prompt_bytes == current_chunk_max_prompt_bytes
+            ):
                 raise
 
             restart_count += 1
             print(
                 "- 检测到可恢复的 LLM 请求失败，自动缩小分块后重跑本对象: "
                 f"chunk_size {current_chunk_size}->{next_chunk_size}, "
-                f"chunk_max_bytes {current_chunk_max_bytes}->{next_chunk_max_bytes}"
+                f"chunk_max_bytes {current_chunk_max_bytes}->{next_chunk_max_bytes}, "
+                f"chunk_max_prompt_bytes {current_chunk_max_prompt_bytes}->{next_chunk_max_prompt_bytes}"
             )
             current_chunk_size = next_chunk_size
             current_chunk_max_bytes = next_chunk_max_bytes
+            current_chunk_max_prompt_bytes = next_chunk_max_prompt_bytes
 
 
 def load_phase_summaries(artifacts: dict) -> list[str]:
@@ -1340,6 +1451,7 @@ def main() -> int:
                     timeout=args.timeout,
                     chunk_size=args.chunk_size,
                     chunk_max_bytes=args.chunk_max_bytes,
+                    chunk_max_prompt_bytes=args.chunk_max_prompt_bytes,
                     resume_run_id=args.resume_run,
                     auto_shrink=not args.no_auto_shrink,
                 )
