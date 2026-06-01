@@ -42,6 +42,10 @@ CHUNK_BATCH_SIZE = 8
 SUMMARY_MAX_BYTES = 120000
 MERGE_MAX_PROMPT_BYTES = 30000
 MERGE_MAX_OUTPUT_TOKENS = 1600
+FINAL_EVIDENCE_SUMMARY_MAX_BYTES = 9000
+FINAL_COVERAGE_SUMMARY_MAX_BYTES = 5000
+FINAL_PHASE_SUMMARY_MAX_BYTES = 26000
+FINAL_REPORT_MAX_OUTPUT_TOKENS = 3200
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
 EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = 60
 
@@ -742,7 +746,9 @@ def build_final_prompt(
     evidence_summary: str,
     phase_summaries: list[str],
 ) -> str:
-    joined = "\n\n".join(phase_summaries)
+    joined = limit_text_bytes("\n\n".join(phase_summaries), FINAL_PHASE_SUMMARY_MAX_BYTES)
+    evidence_summary = limit_text_bytes(evidence_summary, FINAL_EVIDENCE_SUMMARY_MAX_BYTES)
+    coverage_summary = limit_text_bytes(coverage_summary, FINAL_COVERAGE_SUMMARY_MAX_BYTES)
     return f"""请基于以下全局统计和全部阶段总结，生成一份细致、克制、证据导向的最终分析报告。
 
 对象：{name}
@@ -1099,6 +1105,14 @@ def text_bytes(text: str) -> int:
     return len(text.encode("utf-8"))
 
 
+def limit_text_bytes(text: str, max_bytes: int) -> str:
+    if text_bytes(text) <= max_bytes:
+        return text
+    encoded = text.encode("utf-8")[:max_bytes]
+    truncated = encoded.decode("utf-8", errors="ignore").rstrip()
+    return truncated + "\n\n[内容已按提示词预算截断，请结合结构化证据摘要与阶段总结文件解读。]"
+
+
 def build_merge_batches(name: str, summaries: list[str], max_prompt_bytes: int = MERGE_MAX_PROMPT_BYTES) -> list[list[str]]:
     if max_prompt_bytes <= 0:
         raise ValueError("max_prompt_bytes 必须大于 0")
@@ -1218,14 +1232,18 @@ def run_single_workflow(
         run_paths["evidence_summary_file"],
     )
 
-    phase_summaries = merge_summaries_if_needed(
-        artifacts["name"],
-        chunk_summaries,
-        skill_prompt,
-        config,
-        timeout,
-    )
-    run_paths["phase_summary_file"].write_text("\n\n".join(phase_summaries).strip() + "\n", encoding="utf-8")
+    if resume_run_id and run_paths["phase_summary_file"].exists():
+        print(f"- 复用已完成阶段总结: {run_paths['phase_summary_file'].name}")
+        phase_summaries = [run_paths["phase_summary_file"].read_text(encoding="utf-8").strip()]
+    else:
+        phase_summaries = merge_summaries_if_needed(
+            artifacts["name"],
+            chunk_summaries,
+            skill_prompt,
+            config,
+            timeout,
+        )
+        run_paths["phase_summary_file"].write_text("\n\n".join(phase_summaries).strip() + "\n", encoding="utf-8")
 
     final_prompt = build_final_prompt(
         artifacts["name"],
@@ -1234,8 +1252,8 @@ def run_single_workflow(
         evidence_summary,
         phase_summaries,
     )
-    print("- 综合全部分块，生成最终报告...")
-    report = call_llm_with_retry(config, skill_prompt, final_prompt, timeout, max_tokens=4200)
+    print(f"- 综合全部分块，生成最终报告... prompt {text_bytes(final_prompt)} bytes")
+    report = call_llm_with_retry(config, skill_prompt, final_prompt, timeout, max_tokens=FINAL_REPORT_MAX_OUTPUT_TOKENS)
     write_report(
         run_paths["analysis_file"],
         run_paths["analysis_meta_file"],
