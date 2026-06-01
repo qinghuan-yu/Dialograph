@@ -121,6 +121,12 @@ Windows 下也可以双击根目录的：
 
 这个批处理会清空旧的 `analysis/` 产物，并处理 `talks/` 下全部 JSON 文件。
 
+运行单元测试：
+
+```bash
+python -m unittest discover -s tests -v
+```
+
 ## 工作流链路
 
 完整链路如下：
