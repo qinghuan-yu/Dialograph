@@ -153,6 +153,71 @@ class EvidenceCompletenessTests(unittest.TestCase):
             run_workflow.require_completion_marker("not done", "<!-- END_FINAL_REPORT -->", "report")
 
 
+class MergeCheckpointTests(unittest.TestCase):
+    def test_merge_summary_reuses_complete_cached_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            merge_dir = Path(tmp) / "merge"
+            cached = "cached summary\n<!-- END_MERGE_SUMMARY -->"
+            run_workflow.write_cached_merge_batch(merge_dir, 1, 1, cached)
+
+            original_limit = run_workflow.SUMMARY_MAX_BYTES
+            original_call = run_workflow.call_llm_with_retry
+            calls = []
+            try:
+                run_workflow.SUMMARY_MAX_BYTES = 10
+
+                def fake_call(*args, **kwargs):
+                    calls.append((args, kwargs))
+                    return "new summary\n<!-- END_MERGE_SUMMARY -->"
+
+                run_workflow.call_llm_with_retry = fake_call
+                result = run_workflow.merge_summaries_if_needed(
+                    "name",
+                    ["a" * 100, "b" * 100],
+                    "skill",
+                    object(),
+                    1,
+                    merge_dir=merge_dir,
+                )
+            finally:
+                run_workflow.SUMMARY_MAX_BYTES = original_limit
+                run_workflow.call_llm_with_retry = original_call
+
+            self.assertEqual(result, [cached])
+            self.assertEqual(calls, [])
+
+    def test_merge_summary_ignores_incomplete_cached_batch(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            merge_dir = Path(tmp) / "merge"
+            run_workflow.write_cached_merge_batch(merge_dir, 1, 1, "incomplete")
+
+            original_limit = run_workflow.SUMMARY_MAX_BYTES
+            original_call = run_workflow.call_llm_with_retry
+            calls = []
+            try:
+                run_workflow.SUMMARY_MAX_BYTES = 10
+
+                def fake_call(*args, **kwargs):
+                    calls.append((args, kwargs))
+                    return "new summary\n<!-- END_MERGE_SUMMARY -->"
+
+                run_workflow.call_llm_with_retry = fake_call
+                result = run_workflow.merge_summaries_if_needed(
+                    "name",
+                    ["a" * 100, "b" * 100],
+                    "skill",
+                    object(),
+                    1,
+                    merge_dir=merge_dir,
+                )
+            finally:
+                run_workflow.SUMMARY_MAX_BYTES = original_limit
+                run_workflow.call_llm_with_retry = original_call
+
+            self.assertEqual(result, ["new summary\n<!-- END_MERGE_SUMMARY -->"])
+            self.assertEqual(len(calls), 1)
+
+
 class PathTests(unittest.TestCase):
     def test_sanitize_filename_removes_unsafe_characters(self) -> None:
         self.assertEqual(output_paths.sanitize_filename('a<b>c:"/\\|?*.'), "a_b_c_______")

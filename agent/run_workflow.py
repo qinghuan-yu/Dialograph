@@ -470,6 +470,7 @@ def build_run_paths(artifacts: dict, run_id: str | None = None) -> dict:
     return {
         "run_id": run_id,
         "run_dir": run_dir,
+        "merge_dir": run_dir / "merge_batches",
         "chunk_dir": run_dir / "分块分析",
         "evidence_dir": run_dir / "结构化证据",
         "chunk_manifest_file": run_dir / f"分块覆盖清单_{artifacts['safe_name']}.json",
@@ -1207,7 +1208,41 @@ def build_merge_batches(name: str, summaries: list[str], max_prompt_bytes: int =
     return batches
 
 
-def merge_summaries_if_needed(name: str, summaries: list[str], skill_prompt: str, config, timeout: int) -> list[str]:
+def merge_batch_file(merge_dir: Path, round_index: int, batch_index: int) -> Path:
+    return merge_dir / f"round_{round_index:03d}" / f"batch_{batch_index:03d}.md"
+
+
+def load_cached_merge_batch(merge_dir: Path | None, round_index: int, batch_index: int) -> str | None:
+    if merge_dir is None:
+        return None
+    batch_file = merge_batch_file(merge_dir, round_index, batch_index)
+    if not batch_file.exists():
+        return None
+    text = batch_file.read_text(encoding="utf-8").strip()
+    try:
+        require_completion_marker(text, "<!-- END_MERGE_SUMMARY -->", "阶段总结合并批次")
+    except IncompleteReportOutput:
+        print(f"- 已有合并批次缓存不完整，将重新生成: {batch_file.name}", flush=True)
+        return None
+    return text
+
+
+def write_cached_merge_batch(merge_dir: Path | None, round_index: int, batch_index: int, text: str) -> None:
+    if merge_dir is None:
+        return
+    batch_file = merge_batch_file(merge_dir, round_index, batch_index)
+    batch_file.parent.mkdir(parents=True, exist_ok=True)
+    batch_file.write_text(text.strip() + "\n", encoding="utf-8")
+
+
+def merge_summaries_if_needed(
+    name: str,
+    summaries: list[str],
+    skill_prompt: str,
+    config,
+    timeout: int,
+    merge_dir: Path | None = None,
+) -> list[str]:
     current = summaries
     merge_round = 1
     while text_bytes("\n\n".join(current)) > SUMMARY_MAX_BYTES and len(current) > 1:
@@ -1223,6 +1258,15 @@ def merge_summaries_if_needed(name: str, summaries: list[str], skill_prompt: str
         for batch_index, batch in enumerate(batches, start=1):
             prompt = build_merge_prompt(name, batch_index, total_batches, batch)
             prompt_bytes = text_bytes(prompt)
+            cached_summary = load_cached_merge_batch(merge_dir, merge_round, batch_index)
+            if cached_summary is not None:
+                print(
+                    f"- 复用已完成合并批次 {batch_index}/{total_batches}: "
+                    f"{text_bytes(cached_summary)} bytes",
+                    flush=True,
+                )
+                merged.append(cached_summary)
+                continue
             print(
                 f"- 合并批次 {batch_index}/{total_batches}: "
                 f"{len(batch)} 个分块总结，prompt {prompt_bytes} bytes",
@@ -1236,6 +1280,7 @@ def merge_summaries_if_needed(name: str, summaries: list[str], skill_prompt: str
                 max_tokens=MERGE_MAX_OUTPUT_TOKENS,
             )
             require_completion_marker(merged_summary, "<!-- END_MERGE_SUMMARY -->", "阶段总结合并批次")
+            write_cached_merge_batch(merge_dir, merge_round, batch_index, merged_summary)
             print(f"- 合并批次 {batch_index}/{total_batches} 完成: {text_bytes(merged_summary)} bytes", flush=True)
             merged.append(merged_summary)
         current = merged
@@ -1323,6 +1368,7 @@ def run_single_workflow(
             skill_prompt,
             config,
             timeout,
+            merge_dir=run_paths["merge_dir"],
         )
         run_paths["phase_summary_file"].write_text("\n\n".join(phase_summaries).strip() + "\n", encoding="utf-8")
 
