@@ -46,8 +46,21 @@ FINAL_EVIDENCE_SUMMARY_MAX_BYTES = 9000
 FINAL_COVERAGE_SUMMARY_MAX_BYTES = 5000
 FINAL_PHASE_SUMMARY_MAX_BYTES = 26000
 FINAL_REPORT_MAX_OUTPUT_TOKENS = 3200
+CHUNK_OUTPUT_TOKENS = 3600
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
 EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = 60
+
+
+class LLMOutputTruncated(RuntimeError):
+    """Raised when the provider reports that output stopped because of token limits."""
+
+
+class IncompleteChunkOutput(RuntimeError):
+    """Raised when a chunk response cannot be used as complete evidence."""
+
+
+class IncompleteReportOutput(RuntimeError):
+    """Raised when a final report response does not include its completion marker."""
 
 
 def parse_args() -> argparse.Namespace:
@@ -309,6 +322,40 @@ def normalize_chunk_evidence(summary: str, chunk_meta: dict) -> dict:
     return normalized
 
 
+def is_complete_chunk_output(summary: str, evidence: dict) -> bool:
+    return evidence.get("parse_status") == "ok" and "<!-- END_CHUNK_ANALYSIS -->" in summary
+
+
+def generate_chunk_analysis(
+    config,
+    skill_prompt: str,
+    prompt: str,
+    timeout: int,
+    chunk_meta: dict,
+) -> tuple[str, dict]:
+    max_tokens = CHUNK_OUTPUT_TOKENS
+    last_error = ""
+    for attempt in range(1, 3):
+        summary = call_llm_with_retry(
+            config,
+            skill_prompt,
+            prompt,
+            timeout,
+            max_tokens=max_tokens,
+        )
+        evidence = normalize_chunk_evidence(summary, chunk_meta)
+        if is_complete_chunk_output(summary, evidence):
+            return summary, evidence
+        last_error = (
+            "缺少合法结构化 JSON"
+            if evidence.get("parse_status") != "ok"
+            else "缺少 END_CHUNK_ANALYSIS 完成标记"
+        )
+        print(f"- 分块输出不完整，准备重试: {last_error}")
+        max_tokens = min(max_tokens * 2, 8000)
+    raise IncompleteChunkOutput(f"分块 {chunk_meta['chunk_index']} 输出不完整: {last_error}")
+
+
 def write_chunk_evidence(evidence_dir: Path, evidence: dict) -> Path:
     evidence_dir.mkdir(parents=True, exist_ok=True)
     evidence_file = evidence_dir / f"evidence_{evidence['chunk_index']:03d}.json"
@@ -499,6 +546,9 @@ def load_existing_chunk_result(run_paths: dict, chunk_index: int) -> tuple[str, 
         return None
     summary = chunk_file.read_text(encoding="utf-8").strip()
     evidence = json.loads(evidence_file.read_text(encoding="utf-8"))
+    if not is_complete_chunk_output(summary, evidence):
+        print(f"- 已有分块 {chunk_index} 输出不完整，将重新生成")
+        return None
     return summary, evidence
 
 
@@ -681,7 +731,12 @@ Markdown 结构：
 ### 人物建模信号
 ### 仍需后文验证的问题
 
-最后必须追加一个合法 fenced JSON，字段必须齐全，数组可为空：
+输出顺序必须是：
+1. 先输出一个合法 fenced JSON，字段必须齐全，数组可为空。
+2. 再输出简短 Markdown 分析。
+3. 最后一行必须是：<!-- END_CHUNK_ANALYSIS -->
+
+JSON schema：
 ```json
 {{
   "schema_version": "{EVIDENCE_SCHEMA_VERSION}",
@@ -732,6 +787,7 @@ def build_merge_prompt(name: str, batch_index: int, total_batches: int, summarie
 ### 对关系类型和互动角色的支持与反证
 ### 对人物建模的支持与反证
 ### 仍需在后续阶段验证的问题
+最后一行必须是：<!-- END_MERGE_SUMMARY -->
 
 以下是要合并的分块分析：
 
@@ -809,6 +865,7 @@ def build_final_prompt(
 1. 全文使用【事实】【推断】【假设】【存疑】四类标记。
 2. 每个章节都尽量给出时间点、具体片段或概括性证据。
 3. 写得具体，允许较长，但不要灌水。
+4. 最后一行必须是：<!-- END_FINAL_REPORT -->
 
 以下是全局统计：
 
@@ -867,6 +924,7 @@ def build_persona_prompt(
 1. 基本画像和倾向性总结尽量用表格。
 2. 动机与需求部分用“动机假设 / 支持证据 / 反证 / 可信度”的表格。
 3. 语言要像“证据支撑的人物侧写”，不是普通读后感。
+4. 最后一行必须是：<!-- END_PERSONA_REPORT -->
 
 以下是统计摘要：
 
@@ -1020,8 +1078,12 @@ def call_llm(
     if not choices:
         raise ValueError(f"LLM 返回缺少 choices: {data}")
 
-    message = choices[0].get("message") or {}
+    choice = choices[0]
+    finish_reason = choice.get("finish_reason")
+    message = choice.get("message") or {}
     content = message.get("content")
+    if finish_reason == "length":
+        raise LLMOutputTruncated("LLM response was truncated by max_tokens")
     if isinstance(content, str) and content.strip():
         return content
 
@@ -1035,6 +1097,8 @@ def call_llm(
             return text
 
     reasoning_content = message.get("reasoning_content")
+    if finish_reason == "length":
+        raise LLMOutputTruncated("LLM response was truncated by max_tokens")
     if isinstance(reasoning_content, str) and reasoning_content.strip():
         return reasoning_content
 
@@ -1076,6 +1140,7 @@ def call_llm_with_retry(
     retry_sleep_seconds: float = 3.0,
 ) -> str:
     last_error: Exception | None = None
+    current_max_tokens = max_tokens
     for attempt in range(1, max_attempts + 1):
         try:
             if attempt > 1:
@@ -1087,10 +1152,15 @@ def call_llm_with_retry(
                 system_prompt=system_prompt,
                 user_prompt=user_prompt,
                 timeout=timeout,
-                max_tokens=max_tokens,
+                max_tokens=current_max_tokens,
             )
         except Exception as exc:  # noqa: BLE001
             last_error = exc
+            if isinstance(exc, LLMOutputTruncated) and attempt < max_attempts:
+                current_max_tokens = min(current_max_tokens * 2, 8000)
+                print(f"- 输出被 max_tokens 截断，提升输出上限后重试: {current_max_tokens}")
+                time.sleep(retry_sleep_seconds)
+                continue
             if should_retry_with_smaller_prompt(exc) and attempt < max_attempts:
                 print(f"- 请求失败，准备重试: {exc}")
                 time.sleep(retry_sleep_seconds)
@@ -1111,6 +1181,11 @@ def limit_text_bytes(text: str, max_bytes: int) -> str:
     encoded = text.encode("utf-8")[:max_bytes]
     truncated = encoded.decode("utf-8", errors="ignore").rstrip()
     return truncated + "\n\n[内容已按提示词预算截断，请结合结构化证据摘要与阶段总结文件解读。]"
+
+
+def require_completion_marker(text: str, marker: str, label: str) -> None:
+    if marker not in text:
+        raise IncompleteReportOutput(f"{label} 缺少完成标记 {marker}，疑似输出被截断")
 
 
 def build_merge_batches(name: str, summaries: list[str], max_prompt_bytes: int = MERGE_MAX_PROMPT_BYTES) -> list[list[str]]:
@@ -1160,6 +1235,7 @@ def merge_summaries_if_needed(name: str, summaries: list[str], skill_prompt: str
                 timeout,
                 max_tokens=MERGE_MAX_OUTPUT_TOKENS,
             )
+            require_completion_marker(merged_summary, "<!-- END_MERGE_SUMMARY -->", "阶段总结合并批次")
             print(f"- 合并批次 {batch_index}/{total_batches} 完成: {text_bytes(merged_summary)} bytes", flush=True)
             merged.append(merged_summary)
         current = merged
@@ -1218,10 +1294,15 @@ def run_single_workflow(
             print(f"- 分析分块 {chunk_index}/{len(chunk_sets)}")
             prompt = build_chunk_prompt(artifacts["stats"], chunk_index, len(chunk_sets), chunk)
             print(f"- 分块提示词大小: {len(prompt.encode('utf-8'))} bytes")
-            summary = call_llm_with_retry(config, skill_prompt, prompt, timeout, max_tokens=2200)
+            summary, evidence = generate_chunk_analysis(
+                config,
+                skill_prompt,
+                prompt,
+                timeout,
+                chunk_manifest[chunk_index - 1],
+            )
             chunk_file = chunk_dir / f"chunk_{chunk_index:03d}.md"
             chunk_file.write_text(summary.strip() + "\n", encoding="utf-8")
-            evidence = normalize_chunk_evidence(summary, chunk_manifest[chunk_index - 1])
             write_chunk_evidence(evidence_dir, evidence)
         chunk_summaries.append(summary.strip())
         evidence_docs.append(evidence)
@@ -1254,6 +1335,7 @@ def run_single_workflow(
     )
     print(f"- 综合全部分块，生成最终报告... prompt {text_bytes(final_prompt)} bytes")
     report = call_llm_with_retry(config, skill_prompt, final_prompt, timeout, max_tokens=FINAL_REPORT_MAX_OUTPUT_TOKENS)
+    require_completion_marker(report, "<!-- END_FINAL_REPORT -->", "最终关系报告")
     write_report(
         run_paths["analysis_file"],
         run_paths["analysis_meta_file"],
@@ -1416,6 +1498,7 @@ def generate_persona_report(
         timeout,
         max_tokens=3200,
     )
+    require_completion_marker(persona_report, "<!-- END_PERSONA_REPORT -->", "人物侧写")
     write_report(
         artifacts["persona_file"],
         artifacts["persona_meta_file"],
