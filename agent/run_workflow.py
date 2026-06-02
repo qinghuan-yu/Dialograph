@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import time
+from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
 from urllib import error, request
@@ -64,6 +65,12 @@ class IncompleteChunkOutput(RuntimeError):
 
 class IncompleteReportOutput(RuntimeError):
     """Raised when a final report response does not include its completion marker."""
+
+
+@dataclass(frozen=True)
+class LLMRetryResult:
+    content: str
+    max_tokens_used: int
 
 
 def parse_args() -> argparse.Namespace:
@@ -366,20 +373,22 @@ def generate_chunk_analysis(
     prompt: str,
     timeout: int,
     chunk_meta: dict,
-) -> tuple[str, dict]:
-    max_tokens = CHUNK_OUTPUT_TOKENS
+    initial_max_tokens: int = CHUNK_OUTPUT_TOKENS,
+) -> tuple[str, dict, int]:
+    max_tokens = initial_max_tokens
     last_error = ""
     for attempt in range(1, 3):
-        summary = call_llm_with_retry(
+        result = call_llm_with_retry_result(
             config,
             CHUNK_EVIDENCE_SYSTEM_PROMPT,
             prompt,
             timeout,
             max_tokens=max_tokens,
         )
+        summary = result.content
         evidence = normalize_chunk_evidence(summary, chunk_meta)
         if is_complete_chunk_evidence(evidence):
-            return summary, evidence
+            return summary, evidence, result.max_tokens_used
         last_error = "缺少合法结构化 JSON"
         print(f"- 分块输出不完整，准备重试: {last_error}")
         max_tokens = min(max_tokens * 2, 8000)
@@ -1053,7 +1062,7 @@ def should_retry_with_smaller_prompt(exc: Exception) -> bool:
     return False
 
 
-def call_llm_with_retry(
+def call_llm_with_retry_result(
     config,
     system_prompt: str,
     user_prompt: str,
@@ -1068,7 +1077,7 @@ def call_llm_with_retry(
         try:
             if attempt > 1:
                 print(f"- 同请求重试: 第 {attempt} 次")
-            return call_llm(
+            content = call_llm(
                 api_base=config.api_base,
                 api_key=config.api_key,
                 model=config.model,
@@ -1077,6 +1086,7 @@ def call_llm_with_retry(
                 timeout=timeout,
                 max_tokens=current_max_tokens,
             )
+            return LLMRetryResult(content=content, max_tokens_used=current_max_tokens)
         except Exception as exc:  # noqa: BLE001
             last_error = exc
             if isinstance(exc, LLMOutputTruncated) and attempt < max_attempts:
@@ -1092,6 +1102,26 @@ def call_llm_with_retry(
     if last_error is not None:
         raise last_error
     raise RuntimeError("LLM 调用失败")
+
+
+def call_llm_with_retry(
+    config,
+    system_prompt: str,
+    user_prompt: str,
+    timeout: int,
+    max_tokens: int,
+    max_attempts: int = 3,
+    retry_sleep_seconds: float = 3.0,
+) -> str:
+    return call_llm_with_retry_result(
+        config,
+        system_prompt,
+        user_prompt,
+        timeout,
+        max_tokens,
+        max_attempts=max_attempts,
+        retry_sleep_seconds=retry_sleep_seconds,
+    ).content
 
 
 def text_bytes(text: str) -> int:
@@ -1252,6 +1282,7 @@ def run_single_workflow(
 
     chunk_summaries = []
     evidence_docs = []
+    chunk_max_tokens = CHUNK_OUTPUT_TOKENS
     for chunk_index, chunk in enumerate(chunk_sets, start=1):
         existing = load_existing_chunk_result(run_paths, chunk_index) if resume_run_id else None
         if existing:
@@ -1261,12 +1292,16 @@ def run_single_workflow(
             print(f"- 分析分块 {chunk_index}/{len(chunk_sets)}")
             prompt = build_chunk_prompt(artifacts["stats"], chunk_index, len(chunk_sets), chunk)
             print(f"- 分块提示词大小: {len(prompt.encode('utf-8'))} bytes")
-            summary, evidence = generate_chunk_analysis(
+            summary, evidence, used_max_tokens = generate_chunk_analysis(
                 config,
                 prompt,
                 timeout,
                 chunk_manifest[chunk_index - 1],
+                initial_max_tokens=chunk_max_tokens,
             )
+            if used_max_tokens > chunk_max_tokens:
+                chunk_max_tokens = used_max_tokens
+                print(f"- 后续分块起始输出上限调整为: {chunk_max_tokens}")
             chunk_file = chunk_dir / f"chunk_{chunk_index:03d}.md"
             chunk_file.write_text(summary.strip() + "\n", encoding="utf-8")
             write_chunk_evidence(evidence_dir, evidence)

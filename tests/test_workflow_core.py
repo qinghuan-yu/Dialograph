@@ -183,6 +183,29 @@ class EvidenceCompletenessTests(unittest.TestCase):
 
             self.assertIsNone(run_workflow.load_existing_chunk_result(run_paths, 1))
 
+    def test_generate_chunk_analysis_returns_successful_token_budget(self) -> None:
+        original_call = run_workflow.call_llm_with_retry_result
+        try:
+            def fake_call(*args, **kwargs):
+                return run_workflow.LLMRetryResult(
+                    content=complete_chunk_json_text(),
+                    max_tokens_used=4800,
+                )
+
+            run_workflow.call_llm_with_retry_result = fake_call
+            _summary, evidence, used_max_tokens = run_workflow.generate_chunk_analysis(
+                object(),
+                "prompt",
+                10,
+                chunk_meta(),
+                initial_max_tokens=1200,
+            )
+        finally:
+            run_workflow.call_llm_with_retry_result = original_call
+
+        self.assertEqual(evidence["parse_status"], "ok")
+        self.assertEqual(used_max_tokens, 4800)
+
     def test_report_completion_marker_is_required(self) -> None:
         run_workflow.require_completion_marker("ok <!-- END_FINAL_REPORT -->", "<!-- END_FINAL_REPORT -->", "report")
         with self.assertRaises(run_workflow.IncompleteReportOutput):
