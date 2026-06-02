@@ -40,6 +40,7 @@ CHUNK_AUTO_SHRINK_MAX_RESTARTS = 3
 CHUNK_MAX_PROMPT_BYTES = 32000
 CHUNK_MIN_PROMPT_BYTES = 18000
 CHUNK_REQUEST_TIMEOUT = 180
+CHUNK_REQUEST_SLEEP_SECONDS = 1.0
 CHUNK_BATCH_SIZE = 8
 SUMMARY_MAX_BYTES = 120000
 MERGE_MAX_PROMPT_BYTES = 30000
@@ -108,6 +109,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=CHUNK_REQUEST_TIMEOUT,
         help=f"单个分块 LLM 请求超时时间，单位秒，默认 {CHUNK_REQUEST_TIMEOUT}",
+    )
+    parser.add_argument(
+        "--chunk-sleep",
+        type=float,
+        default=CHUNK_REQUEST_SLEEP_SECONDS,
+        help=f"新分块请求成功后的冷却秒数，默认 {CHUNK_REQUEST_SLEEP_SECONDS}",
     )
     parser.add_argument(
         "--chunk-size",
@@ -1262,6 +1269,7 @@ def run_single_workflow(
     config,
     timeout: int,
     chunk_timeout: int = CHUNK_REQUEST_TIMEOUT,
+    chunk_sleep: float = CHUNK_REQUEST_SLEEP_SECONDS,
     chunk_size: int = CHUNK_MESSAGE_COUNT,
     chunk_max_bytes: int = CHUNK_MAX_TRANSCRIPT_BYTES,
     chunk_max_prompt_bytes: int = CHUNK_MAX_PROMPT_BYTES,
@@ -1324,6 +1332,9 @@ def run_single_workflow(
             chunk_file = chunk_dir / f"chunk_{chunk_index:03d}.md"
             chunk_file.write_text(summary.strip() + "\n", encoding="utf-8")
             write_chunk_evidence(evidence_dir, evidence)
+            if chunk_sleep > 0 and chunk_index < len(chunk_sets):
+                print(f"- 分块请求冷却: {chunk_sleep:g}s")
+                time.sleep(chunk_sleep)
         chunk_summaries.append(summary.strip())
         evidence_docs.append(evidence)
 
@@ -1419,6 +1430,7 @@ def run_single_workflow_with_auto_shrink(
     config,
     timeout: int,
     chunk_timeout: int = CHUNK_REQUEST_TIMEOUT,
+    chunk_sleep: float = CHUNK_REQUEST_SLEEP_SECONDS,
     chunk_size: int = CHUNK_MESSAGE_COUNT,
     chunk_max_bytes: int = CHUNK_MAX_TRANSCRIPT_BYTES,
     chunk_max_prompt_bytes: int = CHUNK_MAX_PROMPT_BYTES,
@@ -1438,6 +1450,7 @@ def run_single_workflow_with_auto_shrink(
                 config=config,
                 timeout=timeout,
                 chunk_timeout=chunk_timeout,
+                chunk_sleep=chunk_sleep,
                 chunk_size=current_chunk_size,
                 chunk_max_bytes=current_chunk_max_bytes,
                 chunk_max_prompt_bytes=current_chunk_max_prompt_bytes,
@@ -1623,6 +1636,7 @@ def main() -> int:
                     config=config,
                     timeout=args.timeout,
                     chunk_timeout=args.chunk_timeout,
+                    chunk_sleep=args.chunk_sleep,
                     chunk_size=args.chunk_size,
                     chunk_max_bytes=args.chunk_max_bytes,
                     chunk_max_prompt_bytes=args.chunk_max_prompt_bytes,
