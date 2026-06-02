@@ -357,13 +357,12 @@ def normalize_chunk_evidence(summary: str, chunk_meta: dict) -> dict:
     return normalized
 
 
-def is_complete_chunk_output(summary: str, evidence: dict) -> bool:
+def is_complete_chunk_evidence(evidence: dict) -> bool:
     return evidence.get("parse_status") == "ok"
 
 
 def generate_chunk_analysis(
     config,
-    skill_prompt: str,
     prompt: str,
     timeout: int,
     chunk_meta: dict,
@@ -379,13 +378,9 @@ def generate_chunk_analysis(
             max_tokens=max_tokens,
         )
         evidence = normalize_chunk_evidence(summary, chunk_meta)
-        if is_complete_chunk_output(summary, evidence):
+        if is_complete_chunk_evidence(evidence):
             return summary, evidence
-        last_error = (
-            "缺少合法结构化 JSON"
-            if evidence.get("parse_status") != "ok"
-            else "缺少 END_CHUNK_ANALYSIS 完成标记"
-        )
+        last_error = "缺少合法结构化 JSON"
         print(f"- 分块输出不完整，准备重试: {last_error}")
         max_tokens = min(max_tokens * 2, 8000)
     raise IncompleteChunkOutput(f"分块 {chunk_meta['chunk_index']} 输出不完整: {last_error}")
@@ -582,7 +577,7 @@ def load_existing_chunk_result(run_paths: dict, chunk_index: int) -> tuple[str, 
         return None
     summary = chunk_file.read_text(encoding="utf-8").strip()
     evidence = json.loads(evidence_file.read_text(encoding="utf-8"))
-    if not is_complete_chunk_output(summary, evidence):
+    if not is_complete_chunk_evidence(evidence):
         print(f"- 已有分块 {chunk_index} 输出不完整，将重新生成")
         return None
     return summary, evidence
@@ -648,157 +643,6 @@ def format_parse_diagnostics_report(diagnostics: dict) -> str:
     else:
         lines.append("- 无")
     return "\n".join(lines)
-
-
-def build_chunk_prompt(stats: dict, chunk_index: int, total_chunks: int, chunk: list[dict]) -> str:
-    other_name = stats["other_name"]
-    transcript = "\n".join(format_message_line(message, other_name) for message in chunk)
-    return f"""请阅读下面这个时间顺序连续的聊天分块，并输出一份高密度证据分析。
-
-你正在分析第 {chunk_index}/{total_chunks} 个分块。
-本分块时间范围：{chunk[0]['time_str']} ~ {chunk[-1]['time_str']}
-消息数：{len(chunk)}
-
-要求：
-1. 必须把这个分块里的聊天逐行看完再下结论。
-2. 只分析这个分块，不要替整个关系下最终定论。
-3. 严格区分【事实】【推断】【假设】【存疑】。
-4. 每个判断尽量附时间点、原话或明确上下文。
-5. 优先指出反证、边界、语气变化、谁主动推进或收束。
-6. 不要泛泛而谈，不要只复述统计数字。
-7. 这一份分块分析必须同时覆盖三个层次：
-     - 事件层：这段时间发生了什么
-     - 关系层：这些互动对关系类型、互动角色和边界意味着什么
-     - 人物层：对方在这段时间呈现出怎样的人物特征
-8. 不允许只写事件总结，必须明确提炼“关系建模信号”和“人物建模信号”。
-
-请按以下结构输出 Markdown：
-
-## 分块 {chunk_index}
-### 时段概览
-- 用 3 到 6 条 bullet 说明这段时间主要在聊什么、互动强度如何、是否有转折。
-
-### 关键证据
-- 至少列出 8 条证据，格式类似：
-  - 【事实】时间/上下文：……
-  - 【推断】基于以上可推断……
-  - 【假设】可能存在……但证据不足，因为……
-  - 【存疑】这里无法判断……
-
-### 互动模式观察
-- 分析这个分块里：
-  - 谁更主动开启、追问、延展、收尾
-  - 对方对求助、吐槽、脆弱表达、玩笑、任务型话题的反应
-  - 是否出现边界、回避、低成本维持、情绪支持、工具性协作信号
-
-### 关系建模信号
-- 必须明确写出这个分块对关系类型、互动角色和边界的局部支持与反证：
-    - 更像普通熟人、普通朋友、较亲近朋友、工具性/事务性关系、社群/同学/同事式关系、情绪支持或依赖、礼貌维持、低成本社交、亲密或暧昧可能中的哪几类
-    - 为什么支持，为什么不支持
-    - 哪些只是情境性互动，哪些更像稳定模式
-
-### 人物建模信号
-- 必须明确提炼对方在这个分块中呈现出的人物特征：
-    - 表达风格
-    - 情绪处理方式
-    - 对求助、合作、冲突、支持、边界的反应方式
-    - 主动性、共情方式、控制感、回避方式、投入方式
-- 每一项都尽量落到具体证据，不要写抽象形容词列表。
-
-### 仍需后文验证的问题
-- 列 2 到 4 条。
-
-### 结构化证据 JSON
-在 Markdown 分析正文之后，必须追加一个 fenced JSON 代码块，供程序抽取证据。
-JSON 必须是合法 JSON，不要写注释，不要使用 Markdown 表格。
-字段结构如下，数组可为空，但键必须存在：
-
-```json
-{{
-  "schema_version": "{EVIDENCE_SCHEMA_VERSION}",
-  "chunk_index": {chunk_index},
-  "time_range": {{"start": "{chunk[0]['time_str']}", "end": "{chunk[-1]['time_str']}"}},
-  "events": [
-    {{"time": "时间或时间范围", "summary": "事件概括", "evidence": "原话或上下文摘录", "confidence": "high|medium|low"}}
-  ],
-  "relation_signals": [
-    {{"model": "普通熟人|普通朋友|较亲近朋友|工具性/事务性关系|社群/同学/同事式关系|情绪支持或依赖|礼貌维持|低成本社交|亲密或暧昧可能|其他", "direction": "support|against|mixed", "signal": "关系信号", "evidence": "原话或上下文摘录", "confidence": "high|medium|low"}}
-  ],
-  "persona_signals": [
-    {{"trait": "人物特征维度", "signal": "人物建模信号", "evidence": "原话或上下文摘录", "stability": "local|repeated|unclear", "confidence": "high|medium|low"}}
-  ],
-  "counter_evidence": [
-    {{"against": "反驳哪个判断", "evidence": "反证原话或上下文", "confidence": "high|medium|low"}}
-  ],
-  "uncertainties": [
-    {{"question": "仍不能判断的问题", "reason": "证据不足的原因"}}
-  ]
-}}
-```
-
-下面是聊天分块原文：
-
-{transcript}
-"""
-
-
-def build_chunk_prompt(stats: dict, chunk_index: int, total_chunks: int, chunk: list[dict]) -> str:
-    other_name = stats["other_name"]
-    transcript = "\n".join(format_message_line(message, other_name) for message in chunk)
-    return f"""请阅读下面这个按时间顺序连续截取的聊天分块，只分析本分块，不下全局定论。
-
-分块: {chunk_index}/{total_chunks}
-时间: {chunk[0]['time_str']} ~ {chunk[-1]['time_str']}
-消息数: {len(chunk)}
-
-输出要求：
-1. 先给 Markdown 分析，严格区分【事实】【推断】【假设】【存疑】。
-2. 覆盖三层：事件、关系建模信号、人物建模信号。
-3. 每个重要判断尽量带时间点、原话或上下文；优先写反证、边界、语气变化、主动/收束。
-4. 不预设对方性别、关系目标或恋爱/暧昧前提；亲密或暧昧只在证据支持时作为可选模型。
-5. 控制篇幅，避免复述全部聊天；聚焦最能支撑或反驳模型的证据。
-
-Markdown 结构：
-## 分块 {chunk_index}
-### 时段概览
-### 关键证据
-### 互动模式观察
-### 关系建模信号
-### 人物建模信号
-### 仍需后文验证的问题
-
-输出顺序必须是：
-1. 先输出一个合法 fenced JSON，字段必须齐全，数组可为空。
-2. 再输出简短 Markdown 分析。
-3. 最后一行必须是：<!-- END_CHUNK_ANALYSIS -->
-
-JSON schema：
-```json
-{{
-  "schema_version": "{EVIDENCE_SCHEMA_VERSION}",
-  "chunk_index": {chunk_index},
-  "time_range": {{"start": "{chunk[0]['time_str']}", "end": "{chunk[-1]['time_str']}"}},
-  "events": [
-    {{"time": "时间或范围", "summary": "事件概括", "evidence": "原话或上下文", "confidence": "high|medium|low"}}
-  ],
-  "relation_signals": [
-    {{"model": "普通熟人|普通朋友|较亲近朋友|工具性/事务性关系|社群/同学/同事式关系|情绪支持或依赖|礼貌维持|低成本社交|亲密或暧昧可能|其他", "direction": "support|against|mixed", "signal": "关系信号", "evidence": "原话或上下文", "confidence": "high|medium|low"}}
-  ],
-  "persona_signals": [
-    {{"trait": "人物特征维度", "signal": "人物建模信号", "evidence": "原话或上下文", "stability": "local|repeated|unclear", "confidence": "high|medium|low"}}
-  ],
-  "counter_evidence": [
-    {{"against": "反驳哪个判断", "evidence": "反证原话或上下文", "confidence": "high|medium|low"}}
-  ],
-  "uncertainties": [
-    {{"question": "仍不能判断的问题", "reason": "证据不足的原因"}}
-  ]
-}}
-```
-
-聊天分块原文：
-{transcript}
-"""
 
 
 def build_chunk_prompt(stats: dict, chunk_index: int, total_chunks: int, chunk: list[dict]) -> str:
@@ -1419,7 +1263,6 @@ def run_single_workflow(
             print(f"- 分块提示词大小: {len(prompt.encode('utf-8'))} bytes")
             summary, evidence = generate_chunk_analysis(
                 config,
-                skill_prompt,
                 prompt,
                 timeout,
                 chunk_manifest[chunk_index - 1],
