@@ -134,6 +134,19 @@ class ChunkingTests(unittest.TestCase):
         self.assertEqual(flattened, messages)
         self.assertGreater(len(chunks), 1)
 
+    def test_final_prompt_is_budgeted_for_large_summaries(self) -> None:
+        prompt = run_workflow.build_final_prompt(
+            "Other",
+            "s" * 20000,
+            "c" * 20000,
+            "e" * 30000,
+            ["p" * 50000],
+        )
+
+        self.assertLess(len(prompt.encode("utf-8")), 30000)
+        self.assertIn("内容已按提示词预算截断", prompt)
+        self.assertEqual(run_workflow.FINAL_REPORT_MAX_OUTPUT_TOKENS, 4800)
+
 
 class EvidenceCompletenessTests(unittest.TestCase):
     def test_normalize_evidence_and_completion_marker_accept_good_chunk(self) -> None:

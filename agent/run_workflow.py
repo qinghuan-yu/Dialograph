@@ -44,10 +44,11 @@ CHUNK_BATCH_SIZE = 8
 SUMMARY_MAX_BYTES = 120000
 MERGE_MAX_PROMPT_BYTES = 30000
 MERGE_MAX_OUTPUT_TOKENS = 1600
-FINAL_EVIDENCE_SUMMARY_MAX_BYTES = 9000
-FINAL_COVERAGE_SUMMARY_MAX_BYTES = 5000
-FINAL_PHASE_SUMMARY_MAX_BYTES = 26000
-FINAL_REPORT_MAX_OUTPUT_TOKENS = 3200
+FINAL_STATS_SUMMARY_MAX_BYTES = 5000
+FINAL_EVIDENCE_SUMMARY_MAX_BYTES = 6000
+FINAL_COVERAGE_SUMMARY_MAX_BYTES = 2500
+FINAL_PHASE_SUMMARY_MAX_BYTES = 12000
+FINAL_REPORT_MAX_OUTPUT_TOKENS = 4800
 CHUNK_OUTPUT_TOKENS = 1200
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
 EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = 60
@@ -745,10 +746,11 @@ def build_final_prompt(
     evidence_summary: str,
     phase_summaries: list[str],
 ) -> str:
+    stats_summary = limit_text_bytes(stats_summary, FINAL_STATS_SUMMARY_MAX_BYTES)
     joined = limit_text_bytes("\n\n".join(phase_summaries), FINAL_PHASE_SUMMARY_MAX_BYTES)
     evidence_summary = limit_text_bytes(evidence_summary, FINAL_EVIDENCE_SUMMARY_MAX_BYTES)
     coverage_summary = limit_text_bytes(coverage_summary, FINAL_COVERAGE_SUMMARY_MAX_BYTES)
-    return f"""请基于以下全局统计和全部阶段总结，生成一份细致、克制、证据导向的最终分析报告。
+    return f"""请基于以下全局统计、结构化证据摘要和阶段总结，生成一份克制、证据导向的最终分析报告。
 
 对象：{name}
 
@@ -758,7 +760,7 @@ def build_final_prompt(
 3. 要明确区分长期模式、阶段性模式、一次性事件。
 4. 可以细，但不能越界读心。
 5. 若证据不足，明确写【存疑】。
-6. 最终输出要明显比普通总结更细，尽量像“逐项举证的分析报告”。
+6. 输出要信息密度高，不要展开成长篇散文；每节优先写最能支撑结论的 3 到 5 点。
 7. 你看到的阶段总结来自对完整聊天原文的连续分块阅读；请把“全量覆盖说明”作为证据链范围，不要误认为只看了采样。
 8. “结构化证据摘要”是从每个分块的 JSON 证据块汇总而来。最终结论应优先绑定这些证据条目，并同时检查反证与存疑。
 9. 不预设对方性别、性取向、关系目标或恋爱/暧昧前提；亲密或暧昧只作为证据充分时的可选模型。
@@ -770,32 +772,27 @@ def build_final_prompt(
 **重要声明：** 先写一段 2 到 4 句声明，说明本报告如何区分事实、推断、假设、不能判断的部分，并说明不会进行读心或迎合式结论。
 
 ## 一、互动概况
-- 聊天频率变化
-- 主动性与话题控制
-- 关系升温/降温节点与重要事件
+- 3 到 5 条，覆盖频率、主动性、话题控制、关键转折
 
 ## 二、对方的表达风格
-- 语言风格与情绪表达
-- 玩笑、吐槽、反问、表情、严肃模式切换
+- 3 到 5 条，覆盖语言风格、情绪表达、严肃/玩笑模式切换
 
 ## 三、对方的互动模式
-- 主动关心、追问、记忆、回应脆弱表达
-- 面对任务、求助、冲突、边界变化、支持话题时的不同反应
-- 是否存在回避、低成本维持、工具性协作等模式
+- 3 到 5 条，覆盖关心/追问/记忆/回应脆弱表达/任务协作/边界
 
 ## 四、对方在这段关系中的可能定位
-- 用表格评估：普通熟人、普通朋友、较亲近朋友、工具性/事务性关系、社群/同学/同事式关系、情绪支持或依赖、礼貌维持、低成本社交、亲密或暧昧可能
+- 用表格评估最相关的 5 到 7 个模型，不必覆盖所有模型
 - 每行必须包含：支持证据、反证、可信度
 
 ## 五、对方可能的动机逻辑
-- 给出 3 到 5 种解释
+- 给出 3 种解释
 - 每种都包含：支持证据、反证、可信度、还需要什么信息验证
 
 ## 六、对方在你面前呈现出的性格倾向
-- 主动性、共情能力、边界感、情绪稳定性、关系投入方式、回避倾向、责任感、表达成熟度
+- 4 到 6 条，覆盖主动性、共情、边界、情绪稳定性、投入方式、回避倾向等
 
 ## 七、你自己的误判风险
-- 稀缺性滤镜、投射、特殊关系放大、情境性互动误判、选择性注意等
+- 3 到 5 条，覆盖稀缺性滤镜、投射、特殊关系放大、情境性互动误判、选择性注意等
 - 要直接指出哪些判断可能站不住脚
 
 ## 八、总结
@@ -806,8 +803,8 @@ def build_final_prompt(
 
 格式要求：
 1. 全文使用【事实】【推断】【假设】【存疑】四类标记。
-2. 每个章节都尽量给出时间点、具体片段或概括性证据。
-3. 写得具体，允许较长，但不要灌水。
+2. 每个章节给出概括性证据即可，不要长段复述原文。
+3. 写得具体但受控，避免超过必要长度。
 4. 最后一行必须是：<!-- END_FINAL_REPORT -->
 
 以下是全局统计：
