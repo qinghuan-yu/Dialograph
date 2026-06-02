@@ -237,16 +237,19 @@ class MergeCheckpointTests(unittest.TestCase):
             run_workflow.write_cached_merge_batch(merge_dir, 1, 1, cached)
 
             original_limit = run_workflow.SUMMARY_MAX_BYTES
-            original_call = run_workflow.call_llm_with_retry
+            original_call = run_workflow.call_llm_with_retry_result
             calls = []
             try:
                 run_workflow.SUMMARY_MAX_BYTES = 10
 
                 def fake_call(*args, **kwargs):
                     calls.append((args, kwargs))
-                    return "new summary\n<!-- END_MERGE_SUMMARY -->"
+                    return run_workflow.LLMRetryResult(
+                        content="new summary\n<!-- END_MERGE_SUMMARY -->",
+                        max_tokens_used=run_workflow.MERGE_MAX_OUTPUT_TOKENS,
+                    )
 
-                run_workflow.call_llm_with_retry = fake_call
+                run_workflow.call_llm_with_retry_result = fake_call
                 result = run_workflow.merge_summaries_if_needed(
                     "name",
                     ["a" * 100, "b" * 100],
@@ -257,7 +260,7 @@ class MergeCheckpointTests(unittest.TestCase):
                 )
             finally:
                 run_workflow.SUMMARY_MAX_BYTES = original_limit
-                run_workflow.call_llm_with_retry = original_call
+                run_workflow.call_llm_with_retry_result = original_call
 
             self.assertEqual(result, [cached])
             self.assertEqual(calls, [])
@@ -268,16 +271,19 @@ class MergeCheckpointTests(unittest.TestCase):
             run_workflow.write_cached_merge_batch(merge_dir, 1, 1, "incomplete")
 
             original_limit = run_workflow.SUMMARY_MAX_BYTES
-            original_call = run_workflow.call_llm_with_retry
+            original_call = run_workflow.call_llm_with_retry_result
             calls = []
             try:
                 run_workflow.SUMMARY_MAX_BYTES = 10
 
                 def fake_call(*args, **kwargs):
                     calls.append((args, kwargs))
-                    return "new summary\n<!-- END_MERGE_SUMMARY -->"
+                    return run_workflow.LLMRetryResult(
+                        content="new summary\n<!-- END_MERGE_SUMMARY -->",
+                        max_tokens_used=run_workflow.MERGE_MAX_OUTPUT_TOKENS,
+                    )
 
-                run_workflow.call_llm_with_retry = fake_call
+                run_workflow.call_llm_with_retry_result = fake_call
                 result = run_workflow.merge_summaries_if_needed(
                     "name",
                     ["a" * 100, "b" * 100],
@@ -288,10 +294,41 @@ class MergeCheckpointTests(unittest.TestCase):
                 )
             finally:
                 run_workflow.SUMMARY_MAX_BYTES = original_limit
-                run_workflow.call_llm_with_retry = original_call
+                run_workflow.call_llm_with_retry_result = original_call
 
             self.assertEqual(result, ["new summary\n<!-- END_MERGE_SUMMARY -->"])
             self.assertEqual(len(calls), 1)
+
+    def test_merge_summary_reuses_successful_token_budget(self) -> None:
+        original_limit = run_workflow.SUMMARY_MAX_BYTES
+        original_call = run_workflow.call_llm_with_retry_result
+        calls = []
+        try:
+            run_workflow.SUMMARY_MAX_BYTES = 10
+
+            def fake_call(*args, **kwargs):
+                calls.append((args, kwargs))
+                return run_workflow.LLMRetryResult(
+                    content=f"summary {len(calls)}\n<!-- END_MERGE_SUMMARY -->",
+                    max_tokens_used=6400 if len(calls) == 1 else kwargs["max_tokens"],
+                )
+
+            run_workflow.call_llm_with_retry_result = fake_call
+            result = run_workflow.merge_summaries_if_needed(
+                "name",
+                ["a" * 25000, "b" * 25000],
+                "skill",
+                object(),
+                1,
+            )
+        finally:
+            run_workflow.SUMMARY_MAX_BYTES = original_limit
+            run_workflow.call_llm_with_retry_result = original_call
+
+        self.assertGreaterEqual(len(result), 1)
+        self.assertGreaterEqual(len(calls), 2)
+        self.assertEqual(calls[0][1]["max_tokens"], run_workflow.MERGE_MAX_OUTPUT_TOKENS)
+        self.assertEqual(calls[1][1]["max_tokens"], 6400)
 
 
 class AutoShrinkTests(unittest.TestCase):

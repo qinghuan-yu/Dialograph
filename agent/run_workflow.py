@@ -50,6 +50,7 @@ FINAL_EVIDENCE_SUMMARY_MAX_BYTES = 6000
 FINAL_COVERAGE_SUMMARY_MAX_BYTES = 2500
 FINAL_PHASE_SUMMARY_MAX_BYTES = 12000
 FINAL_REPORT_MAX_OUTPUT_TOKENS = 4800
+PERSONA_REPORT_MAX_OUTPUT_TOKENS = 4800
 CHUNK_OUTPUT_TOKENS = 1200
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
 EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = 60
@@ -1225,6 +1226,7 @@ def merge_summaries_if_needed(
             f"合并前 {before_bytes} bytes",
             flush=True,
         )
+        merge_max_tokens = MERGE_MAX_OUTPUT_TOKENS
         for batch_index, batch in enumerate(batches, start=1):
             prompt = build_merge_prompt(name, batch_index, total_batches, batch)
             prompt_bytes = text_bytes(prompt)
@@ -1242,14 +1244,18 @@ def merge_summaries_if_needed(
                 f"{len(batch)} 个分块总结，prompt {prompt_bytes} bytes",
                 flush=True,
             )
-            merged_summary = call_llm_with_retry(
+            result = call_llm_with_retry_result(
                 config,
                 skill_prompt,
                 prompt,
                 timeout,
-                max_tokens=MERGE_MAX_OUTPUT_TOKENS,
+                max_tokens=merge_max_tokens,
             )
+            merged_summary = result.content
             require_completion_marker(merged_summary, "<!-- END_MERGE_SUMMARY -->", "阶段总结合并批次")
+            if result.max_tokens_used > merge_max_tokens:
+                merge_max_tokens = result.max_tokens_used
+                print(f"- 后续合并批次起始输出上限调整为: {merge_max_tokens}", flush=True)
             write_cached_merge_batch(merge_dir, merge_round, batch_index, merged_summary)
             print(f"- 合并批次 {batch_index}/{total_batches} 完成: {text_bytes(merged_summary)} bytes", flush=True)
             merged.append(merged_summary)
@@ -1532,7 +1538,7 @@ def generate_persona_report(
         persona_skill_prompt,
         persona_prompt,
         timeout,
-        max_tokens=3200,
+        max_tokens=PERSONA_REPORT_MAX_OUTPUT_TOKENS,
     )
     require_completion_marker(persona_report, "<!-- END_PERSONA_REPORT -->", "人物侧写")
     write_report(
