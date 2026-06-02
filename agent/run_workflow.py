@@ -68,6 +68,10 @@ class IncompleteReportOutput(RuntimeError):
     """Raised when a final report response does not include its completion marker."""
 
 
+class RetryableChunkStageFailure(RuntimeError):
+    """Raised when chunk analysis can be retried with smaller chunks."""
+
+
 @dataclass(frozen=True)
 class LLMRetryResult:
     content: str
@@ -1303,13 +1307,20 @@ def run_single_workflow(
             print(f"- 分析分块 {chunk_index}/{len(chunk_sets)}")
             prompt = build_chunk_prompt(artifacts["stats"], chunk_index, len(chunk_sets), chunk)
             print(f"- 分块提示词大小: {len(prompt.encode('utf-8'))} bytes")
-            summary, evidence, used_max_tokens = generate_chunk_analysis(
-                config,
-                prompt,
-                min(timeout, chunk_timeout),
-                chunk_manifest[chunk_index - 1],
-                initial_max_tokens=chunk_max_tokens,
-            )
+            try:
+                summary, evidence, used_max_tokens = generate_chunk_analysis(
+                    config,
+                    prompt,
+                    min(timeout, chunk_timeout),
+                    chunk_manifest[chunk_index - 1],
+                    initial_max_tokens=chunk_max_tokens,
+                )
+            except Exception as exc:  # noqa: BLE001
+                if should_retry_with_smaller_prompt(exc):
+                    raise RetryableChunkStageFailure(
+                        f"分块 {chunk_index} 请求失败，可尝试缩小分块: {exc}"
+                    ) from exc
+                raise
             if used_max_tokens > chunk_max_tokens:
                 chunk_max_tokens = used_max_tokens
                 print(f"- 后续分块起始输出上限调整为: {chunk_max_tokens}")
@@ -1439,7 +1450,7 @@ def run_single_workflow_with_auto_shrink(
             can_shrink = (
                 auto_shrink
                 and resume_run_id is None
-                and should_retry_with_smaller_prompt(exc)
+                and isinstance(exc, RetryableChunkStageFailure)
                 and restart_count < CHUNK_AUTO_SHRINK_MAX_RESTARTS
                 and (
                     current_chunk_max_bytes > CHUNK_MIN_TRANSCRIPT_BYTES

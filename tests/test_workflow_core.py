@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import http.client
 import json
 import sys
 import tempfile
@@ -278,6 +279,53 @@ class MergeCheckpointTests(unittest.TestCase):
 
             self.assertEqual(result, ["new summary\n<!-- END_MERGE_SUMMARY -->"])
             self.assertEqual(len(calls), 1)
+
+
+class AutoShrinkTests(unittest.TestCase):
+    def test_auto_shrink_does_not_restart_non_chunk_retryable_errors(self) -> None:
+        original_workflow = run_workflow.run_single_workflow
+        calls = []
+        try:
+            def fake_workflow(**kwargs):
+                calls.append(kwargs)
+                raise http.client.RemoteDisconnected("final report disconnected")
+
+            run_workflow.run_single_workflow = fake_workflow
+            with self.assertRaises(http.client.RemoteDisconnected):
+                run_workflow.run_single_workflow_with_auto_shrink(
+                    artifacts={},
+                    skill_prompt="skill",
+                    config=object(),
+                    timeout=10,
+                )
+        finally:
+            run_workflow.run_single_workflow = original_workflow
+
+        self.assertEqual(len(calls), 1)
+
+    def test_auto_shrink_restarts_chunk_stage_failures(self) -> None:
+        original_workflow = run_workflow.run_single_workflow
+        calls = []
+        try:
+            def fake_workflow(**kwargs):
+                calls.append(kwargs)
+                if len(calls) == 1:
+                    raise run_workflow.RetryableChunkStageFailure("chunk disconnected")
+                return {"status": "success"}
+
+            run_workflow.run_single_workflow = fake_workflow
+            result = run_workflow.run_single_workflow_with_auto_shrink(
+                artifacts={},
+                skill_prompt="skill",
+                config=object(),
+                timeout=10,
+            )
+        finally:
+            run_workflow.run_single_workflow = original_workflow
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(len(calls), 2)
+        self.assertLess(calls[1]["chunk_size"], calls[0]["chunk_size"])
 
 
 class PathTests(unittest.TestCase):
