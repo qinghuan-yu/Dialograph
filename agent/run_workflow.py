@@ -46,7 +46,7 @@ FINAL_EVIDENCE_SUMMARY_MAX_BYTES = 9000
 FINAL_COVERAGE_SUMMARY_MAX_BYTES = 5000
 FINAL_PHASE_SUMMARY_MAX_BYTES = 26000
 FINAL_REPORT_MAX_OUTPUT_TOKENS = 3200
-CHUNK_OUTPUT_TOKENS = 3600
+CHUNK_OUTPUT_TOKENS = 1800
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
 EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = 60
 
@@ -762,6 +762,54 @@ JSON schema：
 ```
 
 聊天分块原文：
+{transcript}
+"""
+
+
+def build_chunk_prompt(stats: dict, chunk_index: int, total_chunks: int, chunk: list[dict]) -> str:
+    other_name = stats["other_name"]
+    transcript = "\n".join(format_message_line(message, other_name) for message in chunk)
+    return f"""Read this continuous chat chunk and extract compact structured evidence only.
+
+Chunk: {chunk_index}/{total_chunks}
+Time range: {chunk[0]['time_str']} ~ {chunk[-1]['time_str']}
+Message count: {len(chunk)}
+
+Rules:
+1. Output exactly one fenced JSON block first, then the completion marker.
+2. Do not write a long Markdown analysis in chunk output.
+3. Keep evidence quotes short, preferably under 80 Chinese characters.
+4. Use at most: 4 events, 5 relation_signals, 5 persona_signals, 4 counter_evidence, 4 uncertainties.
+5. Do not assume gender, romance, ambiguity, or relationship goals.
+6. Distinguish fact/inference/hypothesis/uncertainty inside summaries or signals.
+7. The final line must be: <!-- END_CHUNK_ANALYSIS -->
+
+JSON schema:
+```json
+{{
+  "schema_version": "{EVIDENCE_SCHEMA_VERSION}",
+  "chunk_index": {chunk_index},
+  "time_range": {{"start": "{chunk[0]['time_str']}", "end": "{chunk[-1]['time_str']}"}},
+  "events": [
+    {{"time": "time or range", "summary": "compact event fact/inference", "evidence": "short quote or context", "confidence": "high|medium|low"}}
+  ],
+  "relation_signals": [
+    {{"model": "普通熟人|普通朋友|较亲近朋友|工具性/事务性关系|社群/同学/同事式关系|情绪支持或依赖|礼貌维持|低成本社交|亲密或暧昧可能|其他", "direction": "support|against|mixed", "signal": "compact relation signal", "evidence": "short quote or context", "confidence": "high|medium|low"}}
+  ],
+  "persona_signals": [
+    {{"trait": "trait dimension", "signal": "compact persona signal", "evidence": "short quote or context", "stability": "local|repeated|unclear", "confidence": "high|medium|low"}}
+  ],
+  "counter_evidence": [
+    {{"against": "claim being challenged", "evidence": "short counter-evidence", "confidence": "high|medium|low"}}
+  ],
+  "uncertainties": [
+    {{"question": "uncertain question", "reason": "why evidence is insufficient"}}
+  ]
+}}
+```
+<!-- END_CHUNK_ANALYSIS -->
+
+Chat chunk:
 {transcript}
 """
 

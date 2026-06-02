@@ -88,6 +88,20 @@ class AnalyzeParsingTests(unittest.TestCase):
 
 
 class ChunkingTests(unittest.TestCase):
+    def test_chunk_prompt_requires_compact_json_only_output(self) -> None:
+        prompt = run_workflow.build_chunk_prompt(
+            {"other_name": "Other"},
+            1,
+            1,
+            [message(1), message(2)],
+        )
+
+        self.assertIn("compact structured evidence only", prompt)
+        self.assertIn("Do not write a long Markdown analysis", prompt)
+        self.assertIn("Use at most: 4 events", prompt)
+        self.assertIn("<!-- END_CHUNK_ANALYSIS -->", prompt)
+        self.assertLessEqual(run_workflow.CHUNK_OUTPUT_TOKENS, 1800)
+
     def test_chunk_coverage_rejects_missing_tail(self) -> None:
         messages = [message(index) for index in range(1, 5)]
 
