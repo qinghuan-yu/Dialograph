@@ -59,11 +59,11 @@ Dialograph 用于对用户自愿提供的本地 JSON 对话数据进行结构化
 
 ```env
 LLM_API_BASE=https://api.deepseek.com
-LLM_API_KEY=sk-kfccrazythursdayvme50
+LLM_API_KEY=sk-kfccrazythursdayvme50(替换掉你自己的key)
 LLM_MODEL=deepseek-v4-flash
 ```
 
-现成预设模板在 `agent/presets/mimo-v2.5pro-sgp.env`。
+现成预设模板在 `根目录下的.env.example`。
 
 ## 运行方式
 
