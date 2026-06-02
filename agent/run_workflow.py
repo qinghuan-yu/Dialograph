@@ -39,6 +39,7 @@ CHUNK_AUTO_SHRINK_FACTOR = 0.55
 CHUNK_AUTO_SHRINK_MAX_RESTARTS = 3
 CHUNK_MAX_PROMPT_BYTES = 32000
 CHUNK_MIN_PROMPT_BYTES = 18000
+CHUNK_REQUEST_TIMEOUT = 180
 CHUNK_BATCH_SIZE = 8
 SUMMARY_MAX_BYTES = 120000
 MERGE_MAX_PROMPT_BYTES = 30000
@@ -96,6 +97,12 @@ def parse_args() -> argparse.Namespace:
         type=int,
         default=600,
         help="单个 LLM 请求超时时间，单位秒，默认 600",
+    )
+    parser.add_argument(
+        "--chunk-timeout",
+        type=int,
+        default=CHUNK_REQUEST_TIMEOUT,
+        help=f"单个分块 LLM 请求超时时间，单位秒，默认 {CHUNK_REQUEST_TIMEOUT}",
     )
     parser.add_argument(
         "--chunk-size",
@@ -1052,6 +1059,8 @@ def select_chat_files(talks_dir: Path, targets: list[str], limit: int | None) ->
 
 
 def should_retry_with_smaller_prompt(exc: Exception) -> bool:
+    if isinstance(exc, TimeoutError):
+        return True
     if isinstance(exc, http.client.RemoteDisconnected):
         return True
     if isinstance(exc, error.HTTPError):
@@ -1070,13 +1079,14 @@ def call_llm_with_retry_result(
     max_tokens: int,
     max_attempts: int = 3,
     retry_sleep_seconds: float = 3.0,
-) -> str:
+) -> LLMRetryResult:
     last_error: Exception | None = None
     current_max_tokens = max_tokens
     for attempt in range(1, max_attempts + 1):
         try:
             if attempt > 1:
                 print(f"- 同请求重试: 第 {attempt} 次")
+            print(f"- LLM 请求参数: max_tokens={current_max_tokens}, timeout={timeout}s")
             content = call_llm(
                 api_base=config.api_base,
                 api_key=config.api_key,
@@ -1250,6 +1260,7 @@ def run_single_workflow(
     skill_prompt: str,
     config,
     timeout: int,
+    chunk_timeout: int = CHUNK_REQUEST_TIMEOUT,
     chunk_size: int = CHUNK_MESSAGE_COUNT,
     chunk_max_bytes: int = CHUNK_MAX_TRANSCRIPT_BYTES,
     chunk_max_prompt_bytes: int = CHUNK_MAX_PROMPT_BYTES,
@@ -1295,7 +1306,7 @@ def run_single_workflow(
             summary, evidence, used_max_tokens = generate_chunk_analysis(
                 config,
                 prompt,
-                timeout,
+                min(timeout, chunk_timeout),
                 chunk_manifest[chunk_index - 1],
                 initial_max_tokens=chunk_max_tokens,
             )
@@ -1399,6 +1410,7 @@ def run_single_workflow_with_auto_shrink(
     skill_prompt: str,
     config,
     timeout: int,
+    chunk_timeout: int = CHUNK_REQUEST_TIMEOUT,
     chunk_size: int = CHUNK_MESSAGE_COUNT,
     chunk_max_bytes: int = CHUNK_MAX_TRANSCRIPT_BYTES,
     chunk_max_prompt_bytes: int = CHUNK_MAX_PROMPT_BYTES,
@@ -1417,6 +1429,7 @@ def run_single_workflow_with_auto_shrink(
                 skill_prompt=skill_prompt,
                 config=config,
                 timeout=timeout,
+                chunk_timeout=chunk_timeout,
                 chunk_size=current_chunk_size,
                 chunk_max_bytes=current_chunk_max_bytes,
                 chunk_max_prompt_bytes=current_chunk_max_prompt_bytes,
@@ -1601,6 +1614,7 @@ def main() -> int:
                     skill_prompt=skill_prompt,
                     config=config,
                     timeout=args.timeout,
+                    chunk_timeout=args.chunk_timeout,
                     chunk_size=args.chunk_size,
                     chunk_max_bytes=args.chunk_max_bytes,
                     chunk_max_prompt_bytes=args.chunk_max_prompt_bytes,

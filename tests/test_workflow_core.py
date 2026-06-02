@@ -183,6 +183,9 @@ class EvidenceCompletenessTests(unittest.TestCase):
 
             self.assertIsNone(run_workflow.load_existing_chunk_result(run_paths, 1))
 
+    def test_timeout_is_retryable(self) -> None:
+        self.assertTrue(run_workflow.should_retry_with_smaller_prompt(TimeoutError("timed out")))
+
     def test_generate_chunk_analysis_returns_successful_token_budget(self) -> None:
         original_call = run_workflow.call_llm_with_retry_result
         try:
