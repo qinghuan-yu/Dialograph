@@ -46,9 +46,12 @@ FINAL_EVIDENCE_SUMMARY_MAX_BYTES = 9000
 FINAL_COVERAGE_SUMMARY_MAX_BYTES = 5000
 FINAL_PHASE_SUMMARY_MAX_BYTES = 26000
 FINAL_REPORT_MAX_OUTPUT_TOKENS = 3200
-CHUNK_OUTPUT_TOKENS = 1800
+CHUNK_OUTPUT_TOKENS = 1200
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
 EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = 60
+CHUNK_EVIDENCE_SYSTEM_PROMPT = """You extract structured evidence from one chat chunk.
+Return only one valid JSON object. Do not write Markdown, code fences, prose, or explanations.
+Use short evidence quotes. Do not assume gender, romance, ambiguity, or relationship goals."""
 
 
 class LLMOutputTruncated(RuntimeError):
@@ -243,15 +246,47 @@ def format_coverage_summary(stats: dict, chunk_manifest: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def iter_balanced_json_objects(text: str) -> list[str]:
+    objects = []
+    start = None
+    depth = 0
+    in_string = False
+    escaped = False
+
+    for index, char in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif char == "\\":
+                escaped = True
+            elif char == '"':
+                in_string = False
+            continue
+
+        if char == '"':
+            in_string = True
+        elif char == "{":
+            if depth == 0:
+                start = index
+            depth += 1
+        elif char == "}" and depth > 0:
+            depth -= 1
+            if depth == 0 and start is not None:
+                objects.append(text[start:index + 1])
+                start = None
+
+    return objects
+
+
 def extract_json_block(text: str) -> dict:
-    """Extract the last fenced JSON object from an LLM response."""
+    """Extract a structured JSON object from an LLM response."""
     matches = re.findall(r"```(?:json)?\s*([\s\S]*?)\s*```", text, flags=re.IGNORECASE)
     candidates = [match.strip() for match in reversed(matches) if match.strip().startswith("{")]
     if not candidates:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start != -1 and end != -1 and end > start:
-            candidates.append(text[start:end + 1])
+        stripped = text.strip()
+        if stripped.startswith("{") and stripped.endswith("}"):
+            candidates.append(stripped)
+        candidates.extend(reversed(iter_balanced_json_objects(text)))
 
     errors = []
     for candidate in candidates:
@@ -323,7 +358,7 @@ def normalize_chunk_evidence(summary: str, chunk_meta: dict) -> dict:
 
 
 def is_complete_chunk_output(summary: str, evidence: dict) -> bool:
-    return evidence.get("parse_status") == "ok" and "<!-- END_CHUNK_ANALYSIS -->" in summary
+    return evidence.get("parse_status") == "ok"
 
 
 def generate_chunk_analysis(
@@ -338,7 +373,7 @@ def generate_chunk_analysis(
     for attempt in range(1, 3):
         summary = call_llm_with_retry(
             config,
-            skill_prompt,
+            CHUNK_EVIDENCE_SYSTEM_PROMPT,
             prompt,
             timeout,
             max_tokens=max_tokens,
@@ -769,47 +804,42 @@ JSON schema：
 def build_chunk_prompt(stats: dict, chunk_index: int, total_chunks: int, chunk: list[dict]) -> str:
     other_name = stats["other_name"]
     transcript = "\n".join(format_message_line(message, other_name) for message in chunk)
-    return f"""Read this continuous chat chunk and extract compact structured evidence only.
+    return f"""只阅读下面这个连续聊天分块，并抽取紧凑结构化证据。
 
-Chunk: {chunk_index}/{total_chunks}
-Time range: {chunk[0]['time_str']} ~ {chunk[-1]['time_str']}
-Message count: {len(chunk)}
+分块: {chunk_index}/{total_chunks}
+时间: {chunk[0]['time_str']} ~ {chunk[-1]['time_str']}
+消息数: {len(chunk)}
 
-Rules:
-1. Output exactly one fenced JSON block first, then the completion marker.
-2. Do not write a long Markdown analysis in chunk output.
-3. Keep evidence quotes short, preferably under 80 Chinese characters.
-4. Use at most: 4 events, 5 relation_signals, 5 persona_signals, 4 counter_evidence, 4 uncertainties.
-5. Do not assume gender, romance, ambiguity, or relationship goals.
-6. Distinguish fact/inference/hypothesis/uncertainty inside summaries or signals.
-7. The final line must be: <!-- END_CHUNK_ANALYSIS -->
+硬性输出规则:
+1. 只输出一个合法 JSON 对象。
+2. 不要 Markdown，不要代码围栏，不要解释，不要分析正文。
+3. 字符串尽量短；证据摘录不超过 60 个中文字符。
+4. 最多输出: events 3 条, relation_signals 4 条, persona_signals 4 条, counter_evidence 3 条, uncertainties 3 条。
+5. 不预设性别、恋爱、暧昧或关系目标；只写本分块证据。
 
-JSON schema:
-```json
+JSON 对象格式:
 {{
   "schema_version": "{EVIDENCE_SCHEMA_VERSION}",
   "chunk_index": {chunk_index},
   "time_range": {{"start": "{chunk[0]['time_str']}", "end": "{chunk[-1]['time_str']}"}},
   "events": [
-    {{"time": "time or range", "summary": "compact event fact/inference", "evidence": "short quote or context", "confidence": "high|medium|low"}}
+    {{"time": "时间或范围", "summary": "事实/推断/假设/存疑 + 简短概括", "evidence": "短证据", "confidence": "high|medium|low"}}
   ],
   "relation_signals": [
-    {{"model": "普通熟人|普通朋友|较亲近朋友|工具性/事务性关系|社群/同学/同事式关系|情绪支持或依赖|礼貌维持|低成本社交|亲密或暧昧可能|其他", "direction": "support|against|mixed", "signal": "compact relation signal", "evidence": "short quote or context", "confidence": "high|medium|low"}}
+    {{"model": "普通熟人|普通朋友|较亲近朋友|工具性/事务性关系|社群/同学/同事式关系|情绪支持或依赖|礼貌维持|低成本社交|亲密或暧昧可能|其他", "direction": "support|against|mixed", "signal": "简短信号", "evidence": "短证据", "confidence": "high|medium|low"}}
   ],
   "persona_signals": [
-    {{"trait": "trait dimension", "signal": "compact persona signal", "evidence": "short quote or context", "stability": "local|repeated|unclear", "confidence": "high|medium|low"}}
+    {{"trait": "特征维度", "signal": "简短信号", "evidence": "短证据", "stability": "local|repeated|unclear", "confidence": "high|medium|low"}}
   ],
   "counter_evidence": [
-    {{"against": "claim being challenged", "evidence": "short counter-evidence", "confidence": "high|medium|low"}}
+    {{"against": "被反驳的判断", "evidence": "短反证", "confidence": "high|medium|low"}}
   ],
   "uncertainties": [
-    {{"question": "uncertain question", "reason": "why evidence is insufficient"}}
+    {{"question": "不能判断的问题", "reason": "证据不足原因"}}
   ]
 }}
-```
-<!-- END_CHUNK_ANALYSIS -->
 
-Chat chunk:
+聊天原文:
 {transcript}
 """
 

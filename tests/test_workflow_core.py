@@ -53,6 +53,17 @@ Done.
 """
 
 
+def complete_chunk_json_text() -> str:
+    return """{
+  "schema_version": "chat-evidence-v1",
+  "events": [],
+  "relation_signals": [],
+  "persona_signals": [],
+  "counter_evidence": [],
+  "uncertainties": []
+}"""
+
+
 class AnalyzeParsingTests(unittest.TestCase):
     def test_parse_chat_messages_sorts_and_diagnoses_bad_time(self) -> None:
         raw = [
@@ -96,11 +107,11 @@ class ChunkingTests(unittest.TestCase):
             [message(1), message(2)],
         )
 
-        self.assertIn("compact structured evidence only", prompt)
-        self.assertIn("Do not write a long Markdown analysis", prompt)
-        self.assertIn("Use at most: 4 events", prompt)
-        self.assertIn("<!-- END_CHUNK_ANALYSIS -->", prompt)
-        self.assertLessEqual(run_workflow.CHUNK_OUTPUT_TOKENS, 1800)
+        self.assertIn("只输出一个合法 JSON 对象", prompt)
+        self.assertIn("不要 Markdown", prompt)
+        self.assertIn("events 3 条", prompt)
+        self.assertNotIn("```", prompt)
+        self.assertLessEqual(run_workflow.CHUNK_OUTPUT_TOKENS, 1200)
 
     def test_chunk_coverage_rejects_missing_tail(self) -> None:
         messages = [message(index) for index in range(1, 5)]
@@ -131,15 +142,26 @@ class EvidenceCompletenessTests(unittest.TestCase):
         self.assertEqual(evidence["parse_status"], "ok")
         self.assertTrue(run_workflow.is_complete_chunk_output(text, evidence))
 
-    def test_missing_json_or_marker_is_incomplete(self) -> None:
+    def test_raw_json_chunk_is_complete_without_marker(self) -> None:
+        text = complete_chunk_json_text()
+        evidence = run_workflow.normalize_chunk_evidence(text, chunk_meta())
+
+        self.assertEqual(evidence["parse_status"], "ok")
+        self.assertTrue(run_workflow.is_complete_chunk_output(text, evidence))
+
+    def test_missing_json_is_incomplete(self) -> None:
         no_json = "## Analysis\nOnly prose.\n<!-- END_CHUNK_ANALYSIS -->"
-        no_marker = complete_chunk_text().replace("<!-- END_CHUNK_ANALYSIS -->", "")
 
         evidence_without_json = run_workflow.normalize_chunk_evidence(no_json, chunk_meta())
-        evidence_without_marker = run_workflow.normalize_chunk_evidence(no_marker, chunk_meta())
 
         self.assertFalse(run_workflow.is_complete_chunk_output(no_json, evidence_without_json))
-        self.assertFalse(run_workflow.is_complete_chunk_output(no_marker, evidence_without_marker))
+
+    def test_embedded_balanced_json_can_be_extracted(self) -> None:
+        text = 'prefix {"schema_version":"chat-evidence-v1","events":[],"relation_signals":[],"persona_signals":[],"counter_evidence":[],"uncertainties":[]} suffix'
+        evidence = run_workflow.normalize_chunk_evidence(text, chunk_meta())
+
+        self.assertEqual(evidence["parse_status"], "ok")
+        self.assertTrue(run_workflow.is_complete_chunk_output(text, evidence))
 
     def test_existing_fallback_chunk_is_not_reused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
