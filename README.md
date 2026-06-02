@@ -58,9 +58,9 @@ Dialograph 用于对用户自愿提供的本地 JSON 对话数据进行结构化
 在工作区根目录新建 `.env`，填写：
 
 ```env
-LLM_API_BASE=https://token-plan-sgp.xiaomimimo.com/v1
-LLM_API_KEY=你的密钥
-LLM_MODEL=mimo-v2.5pro
+LLM_API_BASE=https://api.deepseek.com
+LLM_API_KEY=sk-kfccrazythursdayvme50
+LLM_MODEL=deepseek-v4-flash
 ```
 
 现成预设模板在 `agent/presets/mimo-v2.5pro-sgp.env`。
