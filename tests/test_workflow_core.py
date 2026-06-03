@@ -244,6 +244,36 @@ class EvidenceCompletenessTests(unittest.TestCase):
         with self.assertRaises(run_workflow.IncompleteReportOutput):
             run_workflow.require_completion_marker("not done", "<!-- END_FINAL_REPORT -->", "report")
 
+    def test_marked_report_retries_when_marker_is_missing(self) -> None:
+        original_call = run_workflow.call_llm_with_retry_result
+        calls = []
+        try:
+            def fake_call(*args, **kwargs):
+                calls.append(kwargs["max_tokens"])
+                if len(calls) == 1:
+                    return run_workflow.LLMRetryResult(content="not done", max_tokens_used=kwargs["max_tokens"])
+                return run_workflow.LLMRetryResult(
+                    content="done <!-- END_FINAL_REPORT -->",
+                    max_tokens_used=kwargs["max_tokens"],
+                )
+
+            run_workflow.call_llm_with_retry_result = fake_call
+            report = run_workflow.generate_marked_report(
+                object(),
+                "skill",
+                "prompt",
+                10,
+                marker="<!-- END_FINAL_REPORT -->",
+                label="最终关系报告",
+                initial_max_tokens=4800,
+                retry_sleep_seconds=0,
+            )
+        finally:
+            run_workflow.call_llm_with_retry_result = original_call
+
+        self.assertEqual(report, "done <!-- END_FINAL_REPORT -->")
+        self.assertEqual(calls, [4800, 8000])
+
 
 class MergeCheckpointTests(unittest.TestCase):
     def test_merge_summary_reuses_complete_cached_batch(self) -> None:

@@ -1147,6 +1147,41 @@ def call_llm_with_retry(
     ).content
 
 
+def generate_marked_report(
+    config,
+    system_prompt: str,
+    user_prompt: str,
+    timeout: int,
+    marker: str,
+    label: str,
+    initial_max_tokens: int,
+    max_attempts: int = 3,
+    retry_sleep_seconds: float = 3.0,
+) -> str:
+    max_tokens = initial_max_tokens
+    last_report = ""
+    for attempt in range(1, max_attempts + 1):
+        result = call_llm_with_retry_result(
+            config,
+            system_prompt,
+            user_prompt,
+            timeout,
+            max_tokens=max_tokens,
+            max_attempts=1,
+            retry_sleep_seconds=retry_sleep_seconds,
+        )
+        last_report = result.content
+        if marker in last_report:
+            return last_report
+        if attempt < max_attempts:
+            max_tokens = min(max_tokens * 2, 8000)
+            print(f"- {label}缺少完成标记，提升输出上限后重试: {max_tokens}")
+            time.sleep(retry_sleep_seconds)
+
+    require_completion_marker(last_report, marker, label)
+    return last_report
+
+
 def text_bytes(text: str) -> int:
     return len(text.encode("utf-8"))
 
@@ -1376,8 +1411,15 @@ def run_single_workflow(
         phase_summaries,
     )
     print(f"- 综合全部分块，生成最终报告... prompt {text_bytes(final_prompt)} bytes")
-    report = call_llm_with_retry(config, skill_prompt, final_prompt, timeout, max_tokens=FINAL_REPORT_MAX_OUTPUT_TOKENS)
-    require_completion_marker(report, "<!-- END_FINAL_REPORT -->", "最终关系报告")
+    report = generate_marked_report(
+        config,
+        skill_prompt,
+        final_prompt,
+        timeout,
+        marker="<!-- END_FINAL_REPORT -->",
+        label="最终关系报告",
+        initial_max_tokens=FINAL_REPORT_MAX_OUTPUT_TOKENS,
+    )
     write_report(
         run_paths["analysis_file"],
         run_paths["analysis_meta_file"],
@@ -1537,14 +1579,15 @@ def generate_persona_report(
         relation_report,
     )
     print("- 生成对方人物侧写...")
-    persona_report = call_llm_with_retry(
+    persona_report = generate_marked_report(
         config,
         persona_skill_prompt,
         persona_prompt,
         timeout,
-        max_tokens=PERSONA_REPORT_MAX_OUTPUT_TOKENS,
+        marker="<!-- END_PERSONA_REPORT -->",
+        label="人物侧写",
+        initial_max_tokens=PERSONA_REPORT_MAX_OUTPUT_TOKENS,
     )
-    require_completion_marker(persona_report, "<!-- END_PERSONA_REPORT -->", "人物侧写")
     write_report(
         artifacts["persona_file"],
         artifacts["persona_meta_file"],
