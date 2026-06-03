@@ -57,7 +57,8 @@ EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
 EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = 60
 CHUNK_EVIDENCE_SYSTEM_PROMPT = """You extract structured evidence from one chat chunk.
 Return only one valid JSON object. Do not write Markdown, code fences, prose, or explanations.
-Use short evidence quotes. Do not assume gender, romance, ambiguity, or relationship goals."""
+Use short evidence quotes. Do not assume gender, romance, ambiguity, or relationship goals.
+For analytic descriptions, refer to the other person as "对方/此人" only; do not use 他/她/ta unless it appears inside a direct quote."""
 
 
 class LLMOutputTruncated(RuntimeError):
@@ -690,6 +691,7 @@ def build_chunk_prompt(stats: dict, chunk_index: int, total_chunks: int, chunk: 
 3. 字符串尽量短；证据摘录不超过 60 个中文字符。
 4. 最多输出: events 3 条, relation_signals 4 条, persona_signals 4 条, counter_evidence 3 条, uncertainties 3 条。
 5. 不预设性别、恋爱、暧昧或关系目标；只写本分块证据。
+6. 分析性表述统一使用“对方/此人/该对象/对象昵称”，禁止使用“他/她/ta”代称；只有直接引用原文时可以保留原文中的代词。
 
 JSON 对象格式:
 {{
@@ -773,6 +775,7 @@ def build_final_prompt(
 7. 你看到的阶段总结来自对完整聊天原文的连续分块阅读；请把“全量覆盖说明”作为证据链范围，不要误认为只看了采样。
 8. “结构化证据摘要”是从每个分块的 JSON 证据块汇总而来。最终结论应优先绑定这些证据条目，并同时检查反证与存疑。
 9. 不预设对方性别、性取向、关系目标或恋爱/暧昧前提；亲密或暧昧只作为证据充分时的可选模型。
+10. 除直接引用原文外，全文必须使用“对方/此人/该对象/对象昵称”称呼分析对象；不要使用“他/她/ta/男方/女方”等带性别预设的代称。
 
 请严格按以下结构输出 Markdown：
 
@@ -855,7 +858,7 @@ def build_persona_prompt(
 5. 如果关系分析报告里的某个判断证据不够，要主动降级，不要照搬。
 6. 阶段总结来自完整聊天原文的连续分块阅读；请结合“全量覆盖说明”判断哪些人物信号是长期模式，哪些只是局部信号。
 7. 必须优先参考“结构化证据摘要”中的人物建模证据、反证与存疑；只有跨分块重复出现的信号才可写成稳定倾向。
-8. 不预设对方性别；全文使用“对方/此人”。
+8. 不预设对方性别；除直接引用原文外，全文使用“对方/此人/该对象/对象昵称”，不要使用“他/她/ta/男方/女方”等带性别预设的代称。
 
 请按以下结构输出 Markdown：
 

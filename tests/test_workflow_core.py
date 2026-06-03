@@ -112,6 +112,7 @@ class ChunkingTests(unittest.TestCase):
         self.assertIn("只输出一个合法 JSON 对象", prompt)
         self.assertIn("不要 Markdown", prompt)
         self.assertIn("events 3 条", prompt)
+        self.assertIn("禁止使用“他/她/ta”代称", prompt)
         self.assertNotIn("```", prompt)
         self.assertLessEqual(run_workflow.CHUNK_OUTPUT_TOKENS, 1200)
 
@@ -146,7 +147,21 @@ class ChunkingTests(unittest.TestCase):
 
         self.assertLess(len(prompt.encode("utf-8")), 30000)
         self.assertIn("内容已按提示词预算截断", prompt)
+        self.assertIn("不要使用“他/她/ta/男方/女方”", prompt)
         self.assertEqual(run_workflow.FINAL_REPORT_MAX_OUTPUT_TOKENS, 4800)
+
+    def test_persona_prompt_requires_neutral_pronouns(self) -> None:
+        prompt = run_workflow.build_persona_prompt(
+            "Other",
+            "stats",
+            "coverage",
+            "evidence",
+            ["phase"],
+            "relation",
+        )
+
+        self.assertIn("全文使用“对方/此人/该对象/对象昵称”", prompt)
+        self.assertIn("不要使用“他/她/ta/男方/女方”", prompt)
 
 
 class EvidenceCompletenessTests(unittest.TestCase):
