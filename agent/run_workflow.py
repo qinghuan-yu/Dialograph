@@ -26,6 +26,7 @@ from analyze import (  # noqa: E402
     load_chat,
     parse_chat_messages,
 )
+from artifact_audit import audit_artifacts, has_marker, PERSONA_MARKER  # noqa: E402
 from config import load_llm_config  # noqa: E402
 from output_paths import get_support_output_dir, sanitize_filename  # noqa: E402
 from report_output import write_report  # noqa: E402
@@ -1599,19 +1600,17 @@ def main() -> int:
                 output_dir,
                 write_supporting_files=True,
             )
+            analysis_audit = audit_artifacts(initial_artifacts, require_persona=False)
+            persona_complete = has_marker(initial_artifacts["persona_file"], PERSONA_MARKER)
             need_analysis = (
                 args.force
                 or args.resume_run is not None
-                or not initial_artifacts["analysis_file"].exists()
-                or not initial_artifacts["phase_summary_file"].exists()
-                or not initial_artifacts["coverage_summary_file"].exists()
-                or not initial_artifacts["evidence_ledger_file"].exists()
-                or not initial_artifacts["evidence_summary_file"].exists()
+                or not analysis_audit.ok
             )
             need_persona = (
                 args.force
                 or args.force_persona
-                or not initial_artifacts["persona_file"].exists()
+                or not persona_complete
             )
             if not need_analysis and not need_persona:
                 print("- 跳过：关系分析、阶段总结、覆盖说明、结构化证据与人物侧写均已存在")
@@ -1625,6 +1624,12 @@ def main() -> int:
                 continue
 
             print(f"- 有效消息数: {initial_artifacts['message_count']}")
+            if not analysis_audit.ok and not args.force and args.resume_run is None:
+                print("- 兼容路径产物审计未通过，将重新生成关系分析:")
+                for issue in analysis_audit.errors[:5]:
+                    print(f"  - {issue}")
+            if not persona_complete and not args.force and not args.force_persona:
+                print("- 人物侧写缺失或缺少完成标记，将重新生成")
             diagnostics = initial_artifacts["parse_diagnostics"]
             if diagnostics.get("sort_changed"):
                 print("- 解析诊断: 原始消息顺序已按时间戳重新排序")

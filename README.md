@@ -127,6 +127,18 @@ Windows 下也可以双击根目录的：
 python -m unittest discover -s tests -v
 ```
 
+审计已有分析产物完整性：
+
+```bash
+python agent/artifact_audit.py
+```
+
+只审计某个对象：
+
+```bash
+python agent/artifact_audit.py Axolotl
+```
+
 ## 工作流链路
 
 完整链路如下：

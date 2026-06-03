@@ -13,6 +13,7 @@ AGENT_DIR = ROOT / "agent"
 sys.path.insert(0, str(AGENT_DIR))
 
 import analyze  # noqa: E402
+import artifact_audit  # noqa: E402
 import output_paths  # noqa: E402
 import run_workflow  # noqa: E402
 
@@ -376,6 +377,91 @@ class AutoShrinkTests(unittest.TestCase):
         self.assertEqual(result["status"], "success")
         self.assertEqual(len(calls), 2)
         self.assertLess(calls[1]["chunk_size"], calls[0]["chunk_size"])
+
+
+class ArtifactAuditTests(unittest.TestCase):
+    def make_artifacts(self, root: Path) -> dict:
+        support = root / "临时文件" / "Other"
+        chunk_dir = support / "分块分析"
+        evidence_dir = support / "结构化证据"
+        chunk_dir.mkdir(parents=True)
+        evidence_dir.mkdir()
+        return {
+            "name": "Other",
+            "safe_name": "Other",
+            "message_count": 2,
+            "analysis_file": root / "分析_Other.md",
+            "persona_file": root / "人物侧写_Other.md",
+            "phase_summary_file": support / "阶段总结_Other.md",
+            "coverage_summary_file": support / "全量覆盖说明_Other.md",
+            "evidence_summary_file": support / "结构化证据摘要_Other.md",
+            "chunk_manifest_file": support / "分块覆盖清单_Other.json",
+            "evidence_ledger_file": support / "结构化证据总表_Other.json",
+            "chunk_dir": chunk_dir,
+            "evidence_dir": evidence_dir,
+        }
+
+    def write_complete_artifacts(self, artifacts: dict) -> None:
+        artifacts["analysis_file"].write_text("report\n<!-- END_FINAL_REPORT -->\n", encoding="utf-8")
+        artifacts["persona_file"].write_text("persona\n<!-- END_PERSONA_REPORT -->\n", encoding="utf-8")
+        artifacts["phase_summary_file"].write_text("phase\n", encoding="utf-8")
+        artifacts["coverage_summary_file"].write_text("coverage\n", encoding="utf-8")
+        artifacts["evidence_summary_file"].write_text("evidence summary\n", encoding="utf-8")
+        artifacts["chunk_manifest_file"].write_text(
+            json.dumps([
+                {"chunk_index": 1, "message_count": 2, "start_message": 1, "end_message": 2}
+            ], ensure_ascii=False),
+            encoding="utf-8",
+        )
+        evidence = {
+            "schema_version": "chat-evidence-v1",
+            "chunk_count": 1,
+            "documents": [{
+                "chunk_index": 1,
+                "parse_status": "ok",
+                "events": [],
+                "relation_signals": [],
+                "persona_signals": [],
+                "counter_evidence": [],
+                "uncertainties": [],
+            }],
+        }
+        artifacts["evidence_ledger_file"].write_text(json.dumps(evidence, ensure_ascii=False), encoding="utf-8")
+        (artifacts["chunk_dir"] / "chunk_001.md").write_text("{}\n", encoding="utf-8")
+        (artifacts["evidence_dir"] / "evidence_001.json").write_text("{}\n", encoding="utf-8")
+
+    def test_artifact_audit_accepts_complete_outputs(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = self.make_artifacts(Path(tmp))
+            self.write_complete_artifacts(artifacts)
+
+            result = artifact_audit.audit_artifacts(artifacts, require_persona=True)
+
+        self.assertTrue(result.ok, result.errors)
+
+    def test_artifact_audit_rejects_missing_report_marker(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = self.make_artifacts(Path(tmp))
+            self.write_complete_artifacts(artifacts)
+            artifacts["analysis_file"].write_text("truncated report\n", encoding="utf-8")
+
+            result = artifact_audit.audit_artifacts(artifacts, require_persona=True)
+
+        self.assertFalse(result.ok)
+        self.assertTrue(any("完成标记" in error for error in result.errors))
+
+    def test_artifact_audit_rejects_fallback_evidence(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            artifacts = self.make_artifacts(Path(tmp))
+            self.write_complete_artifacts(artifacts)
+            ledger = json.loads(artifacts["evidence_ledger_file"].read_text(encoding="utf-8"))
+            ledger["documents"][0]["parse_status"] = "fallback"
+            artifacts["evidence_ledger_file"].write_text(json.dumps(ledger, ensure_ascii=False), encoding="utf-8")
+
+            result = artifact_audit.audit_artifacts(artifacts, require_persona=True)
+
+        self.assertFalse(result.ok)
+        self.assertTrue(any("不可复用分块" in error for error in result.errors))
 
 
 class PathTests(unittest.TestCase):
