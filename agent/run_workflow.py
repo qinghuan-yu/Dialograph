@@ -1160,16 +1160,26 @@ def generate_marked_report(
 ) -> str:
     max_tokens = initial_max_tokens
     last_report = ""
+    last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
-        result = call_llm_with_retry_result(
-            config,
-            system_prompt,
-            user_prompt,
-            timeout,
-            max_tokens=max_tokens,
-            max_attempts=1,
-            retry_sleep_seconds=retry_sleep_seconds,
-        )
+        try:
+            result = call_llm_with_retry_result(
+                config,
+                system_prompt,
+                user_prompt,
+                timeout,
+                max_tokens=max_tokens,
+                max_attempts=1,
+                retry_sleep_seconds=retry_sleep_seconds,
+            )
+        except LLMOutputTruncated as exc:
+            last_error = exc
+            if attempt < max_attempts:
+                max_tokens = min(max_tokens * 2, 8000)
+                print(f"- {label}输出被 max_tokens 截断，提升输出上限后重试: {max_tokens}")
+                time.sleep(retry_sleep_seconds)
+                continue
+            raise
         last_report = result.content
         if marker in last_report:
             return last_report
@@ -1178,6 +1188,8 @@ def generate_marked_report(
             print(f"- {label}缺少完成标记，提升输出上限后重试: {max_tokens}")
             time.sleep(retry_sleep_seconds)
 
+    if last_error is not None and not last_report:
+        raise last_error
     require_completion_marker(last_report, marker, label)
     return last_report
 
