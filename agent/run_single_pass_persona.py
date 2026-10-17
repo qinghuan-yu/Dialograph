@@ -157,8 +157,8 @@ def generate_persona_with_fallback(llm_config, persona_skill_prompt: str, artifa
 
 def main() -> int:
     workspace = Path(__file__).parent.parent
-    output_dir = workspace / "analysis"
-    output_dir.mkdir(exist_ok=True)
+    output_dir = workspace / "analysis" / "预览"
+    output_dir.mkdir(parents=True, exist_ok=True)
     target = sys.argv[1] if len(sys.argv) > 1 else "示例对象"
 
     llm_config = load_llm_config(workspace)
@@ -187,7 +187,7 @@ def main() -> int:
     relation_report = artifacts["analysis_file"].read_text(encoding="utf-8")
 
     print("=" * 60)
-    print("单次人物侧写分析")
+    print("预览：单次人物侧写分析（采样分析，不覆盖正式报告）")
     print("=" * 60)
     print(f"对象: {artifacts['name']}")
     print(f"关系分析文件: {artifacts['analysis_file']}")
@@ -205,6 +205,7 @@ def main() -> int:
         source="api",
         script_name="agent/run_single_pass_persona.py",
         model=llm_config.model,
+        note="预览：仅使用代表性片段，不保证全量证据覆盖，不等同于完整人物侧写",
     )
 
     print(f"已生成: {artifacts['persona_file']}")

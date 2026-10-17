@@ -13,6 +13,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).parent))
 
 from output_paths import get_support_output_dir, sanitize_filename
+from conversation_input import validate_weflow
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_SESSION_GAP_HOURS = 4
@@ -20,8 +21,8 @@ DEFAULT_SESSION_GAP_HOURS = 4
 
 def load_chat(filepath: str) -> dict:
     """加载聊天记录 JSON 文件"""
-    with open(filepath, "r", encoding="utf-8") as f:
-        return json.load(f)
+    with open(filepath, "r", encoding="utf-8-sig") as f:
+        return validate_weflow(json.load(f))
 
 
 def normalize_timestamp(value) -> float | None:

@@ -11,6 +11,7 @@ from pathlib import Path
 import run_workflow as workflow
 from artifact_audit import audit_artifacts, has_marker, PERSONA_MARKER
 from config import load_llm_config
+from workflow_state import run_identity, resume_metadata, LIMIT_KEYS, report_matches
 
 OUTPUTS = {
     'analysis': ('analysis_file', '关系分析', 'markdown'),
@@ -61,6 +62,7 @@ class ProgressStream(io.TextIOBase):
 
 
 def run_job(workspace: Path, job_dir: Path, options: dict, emit) -> dict:
+    warnings = []
     output_dir = job_dir / 'output'
     output_dir.mkdir(exist_ok=True)
     config = load_llm_config(workspace)
@@ -71,42 +73,49 @@ def run_job(workspace: Path, job_dir: Path, options: dict, emit) -> dict:
         artifacts = workflow.build_artifacts(job_dir / 'input.json', output_dir)
         emit({'type': 'stats', 'stats': artifacts['stats'], 'diagnostics': artifacts['parse_diagnostics']})
         if options['mode'] == 'full':
-            relation_ready = audit_artifacts(artifacts, require_persona=False).ok
+            skill_prompt = workflow.load_skill_prompt(Path(__file__).parent / 'SKILL.md')
+            persona_skill_prompt = workflow.load_skill_prompt(Path(__file__).parent / 'PERSONA_SKILL.md')
+            relation_ready = (audit_artifacts(artifacts, require_persona=False).ok
+                              and report_matches(artifacts, skill_prompt, config))
             if not relation_ready:
                 runs = sorted(artifacts['runs_dir'].glob('*')) if artifacts['runs_dir'].exists() else []
                 resume = runs[-1].name if options.get('resume') and runs else None
                 limits = {'chunk_size': options.get('chunk_size', workflow.CHUNK_MESSAGE_COUNT)}
                 if resume:
-                    # 恢复自动缩块后的实际参数，保持已缓存分块与消息范围一致。
-                    metadata = json.loads((runs[-1] / 'run_metadata.json').read_text(encoding='utf-8'))
-                    for key in ('chunk_size', 'chunk_max_bytes', 'chunk_max_prompt_bytes'):
-                        if key in metadata:
-                            limits[key] = metadata[key]
+                    metadata = resume_metadata(artifacts, resume, run_identity(artifacts, skill_prompt, config))
+                    limits = {key: metadata[key] for key in LIMIT_KEYS}
                 emit({'type': 'progress', 'stage': 'chunks', 'message': '开始逐块提取证据。' if not resume else '继续上次运行，复用已完成分块。'})
                 workflow.run_single_workflow_with_auto_shrink(
-                    artifacts, workflow.load_skill_prompt(Path(__file__).parent / 'SKILL.md'),
+                    artifacts, skill_prompt,
                     config, timeout=options.get('timeout', 600),
                     resume_run_id=resume,
                     **limits,
                 )
-            if not has_marker(artifacts['persona_file'], PERSONA_MARKER):
+            if (not relation_ready or not has_marker(artifacts['persona_file'], PERSONA_MARKER)
+                    or not report_matches(artifacts, persona_skill_prompt, config, persona=True)):
                 emit({'type': 'progress', 'stage': 'persona', 'message': '正在根据关系报告与证据生成人物侧写。'})
                 workflow.generate_persona_report(
-                    artifacts, workflow.load_skill_prompt(Path(__file__).parent / 'PERSONA_SKILL.md'),
+                    artifacts, persona_skill_prompt,
                     config, options.get('timeout', 600),
                 )
             emit({'type': 'progress', 'stage': 'audit', 'message': '核验完成标记、分块覆盖与证据完整性。'})
             audit = audit_artifacts(artifacts, require_persona=True)
             if not audit.ok:
                 raise ValueError('结果完整性检查未通过：' + '；'.join(audit.errors))
+            warnings = audit.warnings
+            for warning in warnings:
+                emit({'type': 'warning', 'stage': 'audit', 'message': warning})
         files = {}
         for key, (field, label, kind) in OUTPUTS.items():
             path = artifacts[field]
             if path.is_file():
                 files[key] = {'path': str(path.relative_to(job_dir)), 'label': label, 'kind': kind}
-        result = {'stats': artifacts['stats'], 'diagnostics': artifacts['parse_diagnostics'], 'files': files}
+        result = {'stats': artifacts['stats'], 'diagnostics': artifacts['parse_diagnostics'], 'files': files, 'warnings': warnings}
         (job_dir / 'result.json').write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
-        emit({'type': 'progress', 'stage': 'complete', 'message': '预处理完成。' if options['mode'] == 'preprocess' else '分析完成，结果已通过完整性检查。'})
+        complete_message = '预处理完成。' if options['mode'] == 'preprocess' else '分析完成，结果已通过完整性检查。'
+        if warnings:
+            complete_message += f' 有 {len(warnings)} 项证据覆盖提示，请查看运行日志。'
+        emit({'type': 'progress', 'stage': 'complete', 'message': complete_message})
         return result
 
 

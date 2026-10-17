@@ -161,8 +161,8 @@ def generate_report_with_fallback(llm_config, skill_prompt: str, artifacts: dict
 
 def main() -> int:
     workspace = Path(__file__).parent.parent
-    output_dir = workspace / "analysis"
-    output_dir.mkdir(exist_ok=True)
+    output_dir = workspace / "analysis" / "预览"
+    output_dir.mkdir(parents=True, exist_ok=True)
     target = sys.argv[1] if len(sys.argv) > 1 else "示例对象"
 
     llm_config = load_llm_config(workspace)
@@ -184,7 +184,7 @@ def main() -> int:
     artifacts = build_artifacts(target_file, output_dir, write_supporting_files=True)
     skill_prompt = load_skill_prompt(Path(__file__).parent / "SKILL.md")
     print("=" * 60)
-    print("单次聊天关系分析")
+    print("预览：单次聊天关系分析（采样分析，不覆盖正式报告）")
     print("=" * 60)
     print(f"对象: {artifacts['name']}")
     print(f"预处理文件: {artifacts['preproc_file']}")
@@ -197,6 +197,7 @@ def main() -> int:
         source="api",
         script_name="agent/run_single_pass_analysis.py",
         model=llm_config.model,
+        note="预览：仅使用代表性片段，不保证全量证据覆盖，不等同于完整分析报告",
     )
 
     print(f"已生成: {artifacts['analysis_file']}")

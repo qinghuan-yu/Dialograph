@@ -9,6 +9,7 @@ import re
 import shutil
 import sys
 import time
+import uuid
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -31,6 +32,9 @@ from config import load_llm_config  # noqa: E402
 from output_paths import get_support_output_dir, sanitize_filename  # noqa: E402
 from report_output import write_report  # noqa: E402
 from run_analysis import generate_analysis_prompt  # noqa: E402
+from evidence_validation import validate_evidence, balanced_items, SUMMARY_LIMIT  # noqa: E402
+from workflow_state import run_identity, resume_metadata, LIMIT_KEYS, report_identity, report_matches  # noqa: E402
+from run_promotion import promote_successful_run  # noqa: E402
 
 
 CHUNK_MESSAGE_COUNT = 1200
@@ -54,7 +58,7 @@ FINAL_REPORT_MAX_OUTPUT_TOKENS = 4800
 PERSONA_REPORT_MAX_OUTPUT_TOKENS = 4800
 CHUNK_OUTPUT_TOKENS = 1200
 EVIDENCE_SCHEMA_VERSION = "chat-evidence-v1"
-EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = 60
+EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE = SUMMARY_LIMIT
 CHUNK_EVIDENCE_SYSTEM_PROMPT = """You extract structured evidence from one chat chunk.
 Return only one valid JSON object. Do not write Markdown, code fences, prose, or explanations.
 Use short evidence quotes. Do not assume gender, romance, ambiguity, or relationship goals.
@@ -362,6 +366,7 @@ def build_fallback_evidence(chunk_meta: dict, summary: str, error: str | None = 
 def normalize_chunk_evidence(summary: str, chunk_meta: dict) -> dict:
     try:
         data = extract_json_block(summary)
+        validate_evidence(data)
     except ValueError as exc:
         return build_fallback_evidence(chunk_meta, summary, str(exc))
 
@@ -382,12 +387,19 @@ def normalize_chunk_evidence(summary: str, chunk_meta: dict) -> dict:
         "counter_evidence": ensure_list(data.get("counter_evidence")),
         "uncertainties": ensure_list(data.get("uncertainties")),
         "parse_status": "ok",
+        "evidence_status": "signals" if any(data[key] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')) else "insufficient",
     }
     return normalized
 
 
 def is_complete_chunk_evidence(evidence: dict) -> bool:
-    return evidence.get("parse_status") == "ok"
+    if not isinstance(evidence, dict) or evidence.get("parse_status") != "ok":
+        return False
+    try:
+        validate_evidence(evidence)
+    except ValueError:
+        return False
+    return True
 
 
 def generate_chunk_analysis(
@@ -425,24 +437,7 @@ def write_chunk_evidence(evidence_dir: Path, evidence: dict) -> Path:
 
 
 def flatten_evidence_items(evidence_docs: list[dict], key: str, max_items: int) -> list[dict]:
-    items = []
-    for doc in evidence_docs:
-        chunk_index = doc.get("chunk_index")
-        time_range = doc.get("time_range", {})
-        message_range = doc.get("message_range", {})
-        for item in ensure_list(doc.get(key)):
-            if not isinstance(item, dict):
-                continue
-            enriched = {
-                "chunk_index": chunk_index,
-                "time_range": time_range,
-                "message_range": message_range,
-                **item,
-            }
-            items.append(enriched)
-            if len(items) >= max_items:
-                return items
-    return items
+    return balanced_items(evidence_docs, key, max_items)
 
 
 def compact_text(value, max_chars: int = 240) -> str:
@@ -470,6 +465,8 @@ def format_evidence_summary(evidence_docs: list[dict]) -> str:
     for key, title in sections:
         items = flatten_evidence_items(evidence_docs, key, EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE)
         lines.append(f"\n### {title}")
+        total = sum(len(ensure_list(doc.get(key))) for doc in evidence_docs)
+        lines.append(f'- 总数 {total}；选取 {len(items)}；省略 {total - len(items)}。完整条目保留于结构化证据总表。')
         if not items:
             lines.append("- 暂无结构化条目。")
             continue
@@ -522,7 +519,7 @@ def load_evidence_summary(artifacts: dict) -> str:
 
 
 def make_run_id() -> str:
-    return datetime.now().strftime("%Y%m%d-%H%M%S")
+    return datetime.now().strftime("%Y%m%d-%H%M%S") + '-' + uuid.uuid4().hex[:8]
 
 
 def build_run_paths(artifacts: dict, run_id: str | None = None) -> dict:
@@ -547,7 +544,11 @@ def build_run_paths(artifacts: dict, run_id: str | None = None) -> dict:
 
 def write_run_metadata(artifacts: dict, run_paths: dict, status: str, extra: dict | None = None) -> None:
     run_paths["run_dir"].mkdir(parents=True, exist_ok=True)
+    previous = {}
+    if run_paths['run_metadata_file'].exists():
+        previous = json.loads(run_paths['run_metadata_file'].read_text(encoding='utf-8'))
     metadata = {
+        **previous,
         "run_id": run_paths["run_id"],
         "status": status,
         "name": artifacts["name"],
@@ -564,44 +565,7 @@ def write_run_metadata(artifacts: dict, run_paths: dict, status: str, extra: dic
     )
 
 
-def copy_file(src: Path, dst: Path) -> None:
-    if not src.exists():
-        return
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(src, dst)
-
-
-def copy_dir(src: Path, dst: Path) -> None:
-    if not src.exists():
-        return
-    if dst.exists():
-        shutil.rmtree(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(src, dst)
-
-
-def promote_successful_run(artifacts: dict, run_paths: dict) -> None:
-    copy_dir(run_paths["chunk_dir"], artifacts["chunk_dir"])
-    copy_dir(run_paths["evidence_dir"], artifacts["evidence_dir"])
-    copy_file(run_paths["chunk_manifest_file"], artifacts["chunk_manifest_file"])
-    copy_file(run_paths["coverage_summary_file"], artifacts["coverage_summary_file"])
-    copy_file(run_paths["evidence_ledger_file"], artifacts["evidence_ledger_file"])
-    copy_file(run_paths["evidence_summary_file"], artifacts["evidence_summary_file"])
-    copy_file(run_paths["phase_summary_file"], artifacts["phase_summary_file"])
-    copy_file(run_paths["analysis_file"], artifacts["analysis_file"])
-    copy_file(run_paths["analysis_meta_file"], artifacts["analysis_meta_file"])
-    artifacts["latest_run_file"].write_text(
-        json.dumps({
-            "run_id": run_paths["run_id"],
-            "run_dir": str(run_paths["run_dir"]),
-            "analysis_file": str(artifacts["analysis_file"]),
-            "promoted_at": datetime.now().isoformat(timespec="seconds"),
-        }, ensure_ascii=False, indent=2),
-        encoding="utf-8",
-    )
-
-
-def load_existing_chunk_result(run_paths: dict, chunk_index: int) -> tuple[str, dict] | None:
+def load_existing_chunk_result(run_paths: dict, chunk_index: int, expected_meta: dict | None = None) -> tuple[str, dict] | None:
     chunk_file = run_paths["chunk_dir"] / f"chunk_{chunk_index:03d}.md"
     evidence_file = run_paths["evidence_dir"] / f"evidence_{chunk_index:03d}.json"
     if not chunk_file.exists() or not evidence_file.exists():
@@ -611,6 +575,11 @@ def load_existing_chunk_result(run_paths: dict, chunk_index: int) -> tuple[str, 
     if not is_complete_chunk_evidence(evidence):
         print(f"- 已有分块 {chunk_index} 输出不完整，将重新生成")
         return None
+    if expected_meta is not None:
+        expected_range = {'start': expected_meta['start_message'], 'end': expected_meta['end_message']}
+        expected_time = {'start': expected_meta['start_time'], 'end': expected_meta['end_time']}
+        if evidence.get('chunk_index') != chunk_index or evidence.get('message_range') != expected_range or evidence.get('time_range') != expected_time:
+            raise ValueError(f'缓存分块 {chunk_index} 的消息范围或时间范围与当前输入不一致，拒绝续跑。')
     return summary, evidence
 
 
@@ -1180,6 +1149,15 @@ def generate_marked_report(
                 time.sleep(retry_sleep_seconds)
                 continue
             raise
+        except Exception as exc:
+            retryable = should_retry_with_smaller_prompt(exc) and not (
+                isinstance(exc, error.HTTPError) and exc.code in {400, 413}
+            )
+            if retryable and attempt < max_attempts:
+                print(f'- {label}遇到瞬时请求错误，重试同一提示词。')
+                time.sleep(retry_sleep_seconds)
+                continue
+            raise
         last_report = result.content
         if marker in last_report:
             return last_report
@@ -1332,10 +1310,29 @@ def run_single_workflow(
     chunk_max_prompt_bytes: int = CHUNK_MAX_PROMPT_BYTES,
     resume_run_id: str | None = None,
 ) -> dict:
+    identity = run_identity(artifacts, skill_prompt, config)
+    if resume_run_id:
+        saved = resume_metadata(artifacts, resume_run_id, identity)
+        chunk_size, chunk_max_bytes, chunk_max_prompt_bytes = (saved[key] for key in LIMIT_KEYS)
     run_paths = build_run_paths(artifacts, resume_run_id)
     chunk_dir = run_paths["chunk_dir"]
     evidence_dir = run_paths["evidence_dir"]
+    # 续跑预检全部在写入元数据和覆盖清单之前，拒绝修改已有的不一致 run。
+    chunk_sets = chunk_messages(artifacts["messages"], chunk_size, chunk_max_bytes)
+    chunk_sets = split_chunks_by_prompt_budget(artifacts["stats"], chunk_sets, chunk_max_prompt_bytes)
+    validate_chunk_coverage(artifacts["messages"], chunk_sets)
+    chunk_manifest = build_chunk_manifest(chunk_sets)
+    cached = {}
+    if resume_run_id:
+        manifest_path = run_paths['chunk_manifest_file']
+        if not manifest_path.exists() or json.loads(manifest_path.read_text(encoding='utf-8')) != chunk_manifest:
+            raise ValueError('缓存覆盖清单与当前分块不一致，拒绝续跑。')
+        cached = {index: load_existing_chunk_result(run_paths, index, meta)
+                  for index, meta in enumerate(chunk_manifest, start=1)}
+        if run_paths['phase_summary_file'].exists() and not all(cached.values()):
+            raise ValueError('缓存阶段总结存在但分块证据不完整，请重新运行。')
     write_run_metadata(artifacts, run_paths, "running", {
+        **identity,
         "chunk_size": chunk_size,
         "chunk_max_bytes": chunk_max_bytes,
         "chunk_max_prompt_bytes": chunk_max_prompt_bytes,
@@ -1344,10 +1341,6 @@ def run_single_workflow(
     chunk_dir.mkdir(parents=True, exist_ok=True)
     evidence_dir.mkdir(parents=True, exist_ok=True)
 
-    chunk_sets = chunk_messages(artifacts["messages"], chunk_size, chunk_max_bytes)
-    chunk_sets = split_chunks_by_prompt_budget(artifacts["stats"], chunk_sets, chunk_max_prompt_bytes)
-    validate_chunk_coverage(artifacts["messages"], chunk_sets)
-    chunk_manifest = build_chunk_manifest(chunk_sets)
     coverage_summary = format_coverage_summary(artifacts["stats"], chunk_manifest)
     run_paths["chunk_manifest_file"].write_text(
         json.dumps(chunk_manifest, ensure_ascii=False, indent=2),
@@ -1361,7 +1354,7 @@ def run_single_workflow(
     evidence_docs = []
     chunk_max_tokens = CHUNK_OUTPUT_TOKENS
     for chunk_index, chunk in enumerate(chunk_sets, start=1):
-        existing = load_existing_chunk_result(run_paths, chunk_index) if resume_run_id else None
+        existing = cached.get(chunk_index)
         if existing:
             print(f"- 复用已完成分块 {chunk_index}/{len(chunk_sets)}")
             summary, evidence = existing
@@ -1442,6 +1435,7 @@ def run_single_workflow(
         note=f"全量分块覆盖 {artifacts['message_count']} 条有效消息，共 {len(chunk_sets)} 个分块，run_id={run_paths['run_id']}",
         extra_metadata={
             "run_id": run_paths["run_id"],
+            "reuse_identity": report_identity(artifacts, skill_prompt, config),
             "message_count": artifacts["message_count"],
             "chunk_count": len(chunk_sets),
             "chunk_manifest_file": str(run_paths["chunk_manifest_file"]),
@@ -1453,6 +1447,11 @@ def run_single_workflow(
             "diagnostics_file": str(artifacts["diagnostics_file"]),
         },
     )
+    run_audit = audit_artifacts({**artifacts, **run_paths}, require_persona=False)
+    if not run_audit.ok:
+        raise ValueError('本次运行产物审计失败，未替换既有报告：' + '；'.join(run_audit.errors))
+    for warning in run_audit.warnings:
+        print(f'- 审计提示: {warning}')
     promote_successful_run(artifacts, run_paths)
     write_run_metadata(artifacts, run_paths, "success", {
         "chunk_count": len(chunk_sets),
@@ -1609,6 +1608,7 @@ def generate_persona_report(
         model=config.model,
         note=f"基于全量分块阶段总结与关系建模报告生成，覆盖 {artifacts['message_count']} 条有效消息",
         extra_metadata={
+            "reuse_identity": report_identity(artifacts, persona_skill_prompt, config, persona=True),
             "message_count": artifacts["message_count"],
             "analysis_file": str(artifacts["analysis_file"]),
             "phase_summary_file": str(artifacts["phase_summary_file"]),
@@ -1664,11 +1664,14 @@ def main() -> int:
                 args.force
                 or args.resume_run is not None
                 or not analysis_audit.ok
+                or not report_matches(initial_artifacts, skill_prompt, config)
             )
             need_persona = (
                 args.force
                 or args.force_persona
                 or not persona_complete
+                or need_analysis
+                or not report_matches(initial_artifacts, persona_skill_prompt, config, persona=True)
             )
             if not need_analysis and not need_persona:
                 print("- 跳过：关系分析、阶段总结、覆盖说明、结构化证据与人物侧写均已存在")

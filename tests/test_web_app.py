@@ -9,6 +9,8 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent'))
 from web_app import WebService, validate_chat
 from web_worker import run_job, progress_from_line, ProgressStream
+import run_workflow as workflow
+from workflow_state import run_identity
 
 
 def sample_chat():
@@ -95,13 +97,54 @@ class WebAppTests(unittest.TestCase):
         (job_dir / 'input.json').write_text(json.dumps(sample_chat()), encoding='utf-8')
         run_dir = job_dir / 'output' / '临时文件' / '测试对象' / 'runs' / '20261017-000001'
         run_dir.mkdir(parents=True)
-        (run_dir / 'run_metadata.json').write_text(json.dumps({'chunk_size': 660, 'chunk_max_bytes': 12000, 'chunk_max_prompt_bytes': 18000}), encoding='utf-8')
         config = SimpleNamespace(api_key='test-only')
+        artifacts = workflow.build_artifacts(job_dir / 'input.json', job_dir / 'output')
+        skill = workflow.load_skill_prompt(Path(workflow.__file__).parent / 'SKILL.md')
+        (run_dir / 'run_metadata.json').write_text(json.dumps({
+            'chunk_size': 660, 'chunk_max_bytes': 12000, 'chunk_max_prompt_bytes': 18000,
+            **run_identity(artifacts, skill, config),
+        }), encoding='utf-8')
         with patch('web_worker.load_llm_config', return_value=config), patch('run_workflow.run_single_workflow_with_auto_shrink', side_effect=RuntimeError('test-stop')) as run:
             with self.assertRaisesRegex(RuntimeError, 'test-stop'):
                 run_job(self.root, job_dir, {'mode': 'full', 'resume': True}, lambda event: None)
         self.assertEqual(run.call_args.kwargs['chunk_size'], 660)
         self.assertEqual(run.call_args.kwargs['chunk_max_prompt_bytes'], 18000)
+
+    def test_completed_reports_regenerate_after_same_length_input_change(self):
+        job_dir = self.root / 'job'
+        job_dir.mkdir()
+        source = job_dir / 'input.json'
+        data = sample_chat()
+        source.write_text(json.dumps(data), encoding='utf-8')
+        chunk = json.dumps({key: [] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
+        responses = [chunk, 'relation <!-- END_FINAL_REPORT -->', 'persona <!-- END_PERSONA_REPORT -->']
+        config = SimpleNamespace(api_base='https://test.invalid', api_key='test-only', model='test-model')
+        with patch('web_worker.load_llm_config', return_value=config):
+            with patch('run_workflow.call_llm', side_effect=responses):
+                run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
+            data['messages'][0]['content'] = '改变消息'
+            source.write_text(json.dumps(data), encoding='utf-8')
+            with patch('run_workflow.call_llm', side_effect=responses) as llm:
+                run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
+                self.assertEqual(llm.call_count, 3)
+
+    def test_persona_prompt_change_regenerates_only_persona(self):
+        job_dir = self.root / 'job'
+        job_dir.mkdir()
+        (job_dir / 'input.json').write_text(json.dumps(sample_chat()), encoding='utf-8')
+        chunk = json.dumps({key: [] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
+        responses = [chunk, 'relation <!-- END_FINAL_REPORT -->', 'persona <!-- END_PERSONA_REPORT -->']
+        config = SimpleNamespace(api_base='https://test.invalid', api_key='test-only', model='test-model')
+        original_loader = workflow.load_skill_prompt
+        def changed_prompt(path):
+            return original_loader(path) + (' changed' if path.name == 'PERSONA_SKILL.md' else '')
+        with patch('web_worker.load_llm_config', return_value=config):
+            with patch('run_workflow.call_llm', side_effect=responses):
+                run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
+            with patch('run_workflow.load_skill_prompt', side_effect=changed_prompt), \
+                 patch('run_workflow.call_llm', return_value='updated <!-- END_PERSONA_REPORT -->') as llm:
+                run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
+                self.assertEqual(llm.call_count, 1)
 
     def test_one_job_at_a_time_and_cancel_then_resume(self):
         source = self.service.import_chat('test.json', json.dumps(sample_chat()).encode('utf-8'))

@@ -15,6 +15,11 @@
 - `config.py`：读取 `.env` 中的 LLM API 配置。
 - `output_paths.py`：输出目录与文件名清洗。
 - `report_output.py`：报告写入和元数据写入。
+- `conversation_input.py`：网页与 CLI 共用的 WeFlow 私聊输入契约。
+- `workflow_state.py`：续跑输入/流程指纹和保存参数的校验。
+- `evidence_validation.py`：证据字段/枚举校验及跨块摘要取样。
+
+两份 single-pass 入口只写 `analysis/预览/`，人物预览读取关系预览；文件头和控制台均标明预览。正式报告仍由完整工作流生成。
 
 ## Prompt / Skill
 
@@ -30,5 +35,7 @@
 
 ## 预设
 
-- `presets/mimo-v2.5pro-sgp.env`：LLM API 配置模板。
+- 项目根目录 `.env.example`：LLM API 配置模板；复制为本地 `.env` 后填写自己的配置。
+
+本轮可靠性范围、验证记录和后续边界见 [可靠性改进记录](../docs/RELIABILITY_PASS.md)。
 

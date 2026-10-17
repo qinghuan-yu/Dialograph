@@ -4,6 +4,7 @@ import argparse
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+from evidence_validation import validate_evidence, FIELDS, SUMMARY_LIMIT
 
 
 FINAL_MARKER = "<!-- END_FINAL_REPORT -->"
@@ -69,9 +70,16 @@ def audit_evidence_ledger(path: Path, result: AuditResult) -> int | None:
         result.add_error(f"结构化证据总表 JSON 无法解析: {exc}")
         return None
 
+    if not isinstance(ledger, dict):
+        result.add_error('结构化证据总表必须是对象')
+        return None
     documents = ledger.get("documents")
     if not isinstance(documents, list):
         result.add_error("结构化证据总表缺少 documents 数组")
+        return None
+
+    if any(not isinstance(doc, dict) for doc in documents):
+        result.add_error('结构化证据 documents 条目必须是对象')
         return None
 
     fallback_chunks = [
@@ -85,6 +93,10 @@ def audit_evidence_ledger(path: Path, result: AuditResult) -> int | None:
     missing_keys = []
     required_keys = {"events", "relation_signals", "persona_signals", "counter_evidence", "uncertainties"}
     for doc in documents:
+        try:
+            validate_evidence(doc)
+        except ValueError as exc:
+            result.add_error(f'证据结构无效: {exc}')
         absent = sorted(required_keys - set(doc))
         if absent:
             missing_keys.append({"chunk_index": doc.get("chunk_index"), "missing": absent})
@@ -96,6 +108,10 @@ def audit_evidence_ledger(path: Path, result: AuditResult) -> int | None:
         result.add_error(f"结构化证据 chunk_count={declared_count} 但 documents={len(documents)}")
 
     result.stats["evidence_documents"] = len(documents)
+    for key in FIELDS:
+        total = sum(len(doc.get(key, [])) for doc in documents if isinstance(doc.get(key), list))
+        if total > SUMMARY_LIMIT:
+            result.add_warning(f'{key} 摘要最多选取 {SUMMARY_LIMIT}/{total} 条；完整证据保留在总表中。')
     return len(documents)
 
 
@@ -186,7 +202,7 @@ def main() -> int:
     lowered = [target.lower() for target in args.targets]
     support_dirs = [
         path
-        for path in sorted(support_root.iterdir())
+        for path in (sorted(support_root.iterdir()) if support_root.exists() else [])
         if path.is_dir() and (not lowered or any(target in path.name.lower() for target in lowered))
     ]
     results = [audit_support_dir(path, output_dir) for path in support_dirs]

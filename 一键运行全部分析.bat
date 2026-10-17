@@ -48,13 +48,10 @@ if not exist ".env" (
     exit /b 1
 )
 
-echo [1/2] 清空旧的 analysis 产物...
-if exist "analysis" (
-    powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-ChildItem 'analysis' -Force | Remove-Item -Recurse -Force"
-)
+echo [1/2] 保留已有分析、缓存与网页任务历史；完整产物将自动跳过。
 
 echo [2/2] 开始处理 talks 下全部 json 文件...
-call %PYTHON_CMD% "agent\run_workflow.py" --force
+call %PYTHON_CMD% "agent\run_workflow.py"
 set EXIT_CODE=%ERRORLEVEL%
 
 echo.

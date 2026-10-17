@@ -21,6 +21,8 @@ python agent/web_app.py
 
 当前接受现有分析器支持的 WeFlow 原始导出，单文件上限 50 MB：顶层包含 `messages` 数组与可选 `session` 对象；消息包含 `type`、`content`、`isSend`、`formattedTime`、可选 `createTime`。不将 QQChatExporter 或 `text/sender` 清洗格式误当作兼容输入，格式不匹配会提示。
 
+`isSend` 必须为整数 0/1，`type` 使用 WeFlow 中文类型。明确群聊标记、群账号或同一方出现多个稳定发送者账号会被拒绝；不靠昵称变更判定群聊。没有账号元数据时仍须用户确认是两人私聊。
+
 ## 任务与结果
 
 - 一次运行一个网页任务；关闭页面不停止后台分析。页面重开后可从“最近任务”查看状态。
@@ -28,6 +30,7 @@ python agent/web_app.py
 - 每个网页任务在 `analysis/web_jobs/{job_id}/` 保存输入快照、请求参数、状态和 `output/` 产物。与命令行的兼容输出路径分开，避免同名对象或新任务覆盖旧结果。
 - 完整分析复用 `build_artifacts`、`run_single_workflow_with_auto_shrink`、`generate_persona_report`、`audit_artifacts`。最终通过检查后才显示为完成。
 - 网页任务历史只包含由网页创建的任务；已有命令行报告目前不会自动导入。
+- 续跑会检查输入与流程指纹、原分块参数和缓存范围；旧缓存缺少校验信息时须新建任务。证据摘要覆盖缩减会显示于完成提示和运行日志，完整证据仍可下载。
 - 页面支持 Markdown 的标题、段落、列表、引用、粗体、行内代码、代码块和表格；JSON 以格式化文本显示。报告内 HTML 不执行。
 
 服务仅监听 `127.0.0.1`，只开放前端静态文件及白名单结果接口；不把项目根目录作为静态目录。`talks/`、`analysis/`、`.env` 继续由 Git 忽略。

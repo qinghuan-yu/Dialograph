@@ -19,31 +19,15 @@ from urllib.parse import urlparse, parse_qs, quote
 from analyze import parse_chat_messages
 from config import load_llm_config
 from web_worker import OUTPUTS
+from conversation_input import validate_weflow
 
 MAX_UPLOAD = 50 * 1024 * 1024
 ACTIVE = {'queued', 'running'}
 
 
 def validate_chat(data):
-    if not isinstance(data, dict) or not isinstance(data.get('session', {}), dict):
-        raise ValueError('需要包含 session 对象和 messages 数组的 WeFlow JSON。')
-    messages = data.get('messages')
-    if not isinstance(messages, list) or not messages or any(not isinstance(m, dict) for m in messages):
-        raise ValueError('messages 必须是非空的消息对象数组。')
-    if not all('isSend' in m and 'formattedTime' in m for m in messages):
-        raise ValueError('当前分析器需要 WeFlow 原始导出字段 isSend、formattedTime；不支持清洗后的 text/sender 格式。')
-    for m in messages:
-        if not isinstance(m.get('type', ''), str):
-            raise ValueError('消息 type 必须是文本。')
-        if m['isSend'] not in (0, 1) or not isinstance(m['formattedTime'], str):
-            raise ValueError('消息的 isSend 或 formattedTime 字段格式不正确。')
-        if m.get('content') is not None and not isinstance(m['content'], str):
-            raise ValueError('消息 content 必须是文本或 null。')
-    session = data.get('session', {})
-    for field in ('displayName', 'nickname', 'myDisplayName'):
-        if field in session and (not isinstance(session[field], str) or not session[field].strip()):
-            raise ValueError(f'session.{field} 必须是非空文本。')
-    if not parse_chat_messages(messages)['messages']:
+    validate_weflow(data)
+    if not parse_chat_messages(data['messages'])['messages']:
         raise ValueError('没有可分析的有效消息。')
     return data
 
@@ -191,7 +175,7 @@ class WebService:
                     continue
                 if event['type'] == 'result':
                     received_result = True
-                    state.update(files=event['files'], stats=event['stats'], diagnostics=event['diagnostics'])
+                    state.update(files=event['files'], stats=event['stats'], diagnostics=event['diagnostics'], warnings=event.get('warnings', []))
                 elif event['type'] == 'stats':
                     state.update(stats=event['stats'], diagnostics=event['diagnostics'])
                 else:
