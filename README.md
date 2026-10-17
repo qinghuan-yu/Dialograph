@@ -67,6 +67,20 @@ LLM_MODEL=deepseek-v4-flash
 
 ## 运行方式
 
+### 本地网页
+
+在项目根目录启动：
+
+```bash
+python agent/web_app.py
+```
+
+浏览器打开 http://127.0.0.1:5173 。可选择 `talks/` 中的对话或导入 WeFlow JSON，运行仅预处理或完整分析，查看真实阶段、分块进度和统计图表，并阅读、下载报告与证据。完整分析使用上方 `.env` 配置的模型服务。
+
+网页任务支持停止与继续；输入快照、状态和输出保存在被忽略的 `analysis/web_jobs/{job_id}/` 中。网页任务不会覆盖原有命令行报告。格式要求、输出与验证说明见 [前端说明](frontend/README.md)。
+
+### 命令行
+
 推荐直接运行完整工作流：
 
 常用命令：
@@ -136,7 +150,7 @@ python agent/artifact_audit.py
 只审计某个对象：
 
 ```bash
-python agent/artifact_audit.py Axolotl
+python agent/artifact_audit.py 示例对象
 ```
 
 ## 工作流链路

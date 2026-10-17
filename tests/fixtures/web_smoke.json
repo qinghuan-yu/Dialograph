@@ -1,0 +1,17 @@
+{
+  "session": {"displayName": "端到端测试（合成对话）", "myDisplayName": "测试用户"},
+  "messages": [
+    {"type":"文本消息","content":"这周一起准备读书分享吗？","isSend":1,"formattedTime":"2026-05-01 10:00:00","createTime":1777600800},
+    {"type":"文本消息","content":"可以。我周三晚上有空，你想讲哪一部分？","isSend":0,"formattedTime":"2026-05-01 10:02:00","createTime":1777600920},
+    {"type":"文本消息","content":"我负责背景，你负责案例，可以吗？","isSend":1,"formattedTime":"2026-05-01 10:03:00","createTime":1777600980},
+    {"type":"文本消息","content":"好，我整理两个例子，周三发你。","isSend":0,"formattedTime":"2026-05-01 10:05:00","createTime":1777601100},
+    {"type":"文本消息","content":"案例整理好了，我发你看看。","isSend":0,"formattedTime":"2026-05-03 19:00:00","createTime":1777806000},
+    {"type":"文本消息","content":"谢谢！第二个例子可能太长，能压缩一点吗？","isSend":1,"formattedTime":"2026-05-03 19:04:00","createTime":1777806240},
+    {"type":"文本消息","content":"我今晚有点累，明天下午改好给你可以吗？","isSend":0,"formattedTime":"2026-05-03 19:06:00","createTime":1777806360},
+    {"type":"文本消息","content":"可以，明天再改。今晚先休息。","isSend":1,"formattedTime":"2026-05-03 19:08:00","createTime":1777806480},
+    {"type":"文本消息","content":"改好了，删掉了一段重复的说明。","isSend":0,"formattedTime":"2026-05-04 15:00:00","createTime":1777878000},
+    {"type":"文本消息","content":"现在清楚多了。我把背景和案例合起来。","isSend":1,"formattedTime":"2026-05-04 15:03:00","createTime":1777878180},
+    {"type":"文本消息","content":"好，明晚我们一起过一遍？","isSend":0,"formattedTime":"2026-05-04 15:04:00","createTime":1777878240},
+    {"type":"文本消息","content":"没问题，八点见。","isSend":1,"formattedTime":"2026-05-04 15:05:00","createTime":1777878300}
+  ]
+}

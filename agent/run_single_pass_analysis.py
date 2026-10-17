@@ -163,7 +163,7 @@ def main() -> int:
     workspace = Path(__file__).parent.parent
     output_dir = workspace / "analysis"
     output_dir.mkdir(exist_ok=True)
-    target = sys.argv[1] if len(sys.argv) > 1 else "黄芷馨"
+    target = sys.argv[1] if len(sys.argv) > 1 else "示例对象"
 
     llm_config = load_llm_config(workspace)
     if not llm_config.api_key:

@@ -1,0 +1,62 @@
+<!doctype html>
+<html lang="zh-CN">
+<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="description" content="Dialograph 本地对话分析：选择对话、查看分析过程、阅读结果。"><title>Dialograph · 对话分析</title><link rel="stylesheet" href="./styles.css"><script src="./app.js" defer></script></head>
+<body>
+<a class="skip-link" href="#workspace">跳至分析工作区</a>
+<div class="site-frame">
+  <header class="site-header"><a class="brand" href="/">Dialograph<span>.</span></a><nav aria-label="主导航"><a href="#workspace">分析对话</a><a href="#results">输出结果</a></nav><span class="local-label">本地工作区</span></header>
+  <main>
+    <section class="hero"><p class="eyebrow">Conversation analysis</p><h1>从一段对话，<br class="mobile-break">开始理解。</h1><p>整理消息，逐块分析，让每一份结果都有迹可循。</p></section>
+    <div id="connection-error" class="notice error" role="alert" hidden></div>
+    <div class="workspace" id="workspace">
+      <div class="main-column">
+        <section aria-labelledby="input-title">
+          <div class="section-heading"><h2 id="input-title"><span class="step-number">01</span>选择对话</h2><button class="text-button" id="refresh-files" type="button">刷新列表</button></div>
+          <form id="analysis-form">
+            <label for="conversation">本地对话文件</label>
+            <div class="source-row"><select id="conversation" required disabled><option value="">正在读取本地文件…</option></select><button class="outline-button" id="import-button" type="button">导入 JSON</button><input id="file-input" type="file" accept=".json,application/json" hidden></div>
+            <p class="field-hint" id="file-hint">读取 talks 文件夹，或导入 WeFlow 原始导出的 JSON。</p>
+            <fieldset><legend>分析方式</legend><div class="mode-options">
+              <label class="mode-option"><input type="radio" name="mode" value="preprocess" checked><span><strong>仅预处理</strong><small>解析、统计与诊断 · 不调用模型</small></span></label>
+              <label class="mode-option"><input type="radio" name="mode" value="full"><span><strong>完整分析</strong><small>逐块提取证据 · 关系报告与人物侧写</small></span></label>
+            </div></fieldset>
+            <p class="model-notice" id="model-notice" hidden></p>
+            <details class="advanced"><summary>分析参数</summary><div class="advanced-fields"><label for="chunk-size">每块最多消息数<input id="chunk-size" type="number" min="1" max="10000" step="1" value="1200"></label><label for="timeout">请求超时（秒）<input id="timeout" type="number" min="30" max="3600" step="1" value="600"></label></div><p class="field-hint">完整分析同时按原文字节与提示词预算分块；可恢复的分块请求错误会自动缩块重试。</p></details>
+            <div class="form-actions"><button class="primary-button" id="start-button" type="submit" disabled>开始预处理 ↗</button><span id="mode-description">先看看这段对话的基本情况。</span></div>
+            <p id="form-error" class="error-text" role="alert" hidden></p>
+          </form>
+        </section>
+        <section class="process-section" aria-labelledby="process-title">
+          <div class="section-heading"><h2 id="process-title"><span class="step-number">02</span>分析过程</h2><span id="job-status" class="status-label">尚未开始</span></div>
+          <p id="job-name" class="job-name">选择文件后，运行过程会显示在这里。</p>
+          <ol id="stages" class="stages" aria-label="工作流阶段">
+            <li><span class="stage-mark">1</span><span>解析与统计</span><small>等待开始</small></li>
+            <li><span class="stage-mark">2</span><span>逐块分析</span><small>等待开始</small></li>
+            <li><span class="stage-mark">3</span><span>证据汇总</span><small>等待开始</small></li>
+            <li><span class="stage-mark">4</span><span>关系报告</span><small>等待开始</small></li>
+            <li><span class="stage-mark">5</span><span>人物侧写</span><small>等待开始</small></li>
+            <li><span class="stage-mark">6</span><span>完整性检查</span><small>等待开始</small></li>
+          </ol>
+          <div id="chunk-progress" class="chunk-progress" hidden><div><span id="chunk-label"></span><span id="chunk-count"></span></div><progress id="chunk-meter" max="1" value="0"></progress></div>
+          <p id="live-message" class="live-message" role="status" aria-live="polite">进度来自实际执行阶段。</p>
+          <div class="job-actions"><button class="outline-button" id="cancel-button" type="button" hidden>停止任务</button><button class="outline-button" id="retry-button" type="button" hidden>继续任务</button></div>
+          <details class="log-details"><summary>运行记录 <span id="log-count">0</span></summary><ol id="logs" aria-label="运行记录"></ol></details>
+        </section>
+        <section id="results" class="results-section" aria-labelledby="results-title">
+          <div class="section-heading"><h2 id="results-title"><span class="step-number">03</span>输出结果</h2><span id="result-label" class="status-label">等待分析</span></div>
+          <p id="results-empty" class="empty-note">完成预处理后可查看统计；完整分析结束后可阅读报告、检查证据并下载结果。</p>
+          <div id="stats-panel" hidden><dl id="metrics" class="metrics"></dl><div class="trend-heading"><h3>每月消息量</h3><span>我 / 对方 · 最近 12 个有记录月份</span></div><div id="monthly-chart" class="monthly-chart" aria-label="每月消息量"></div><p id="diagnostic-summary" class="field-hint"></p></div>
+          <div id="report-panel" hidden><div class="report-navigation"><div id="report-tabs" class="report-tabs" role="group" aria-label="选择输出文件"></div><button type="button" class="text-button" id="download-button">下载当前文件 ↗</button></div><p id="report-error" class="error-text" role="alert" hidden></p><article id="report-content" class="report-content" aria-live="polite"></article></div>
+        </section>
+      </div>
+      <aside class="sidebar" aria-label="模型与任务">
+        <section><h2>运行环境</h2><dl class="environment"><dt>模型</dt><dd id="model-name">正在连接…</dd><dt>配置状态</dt><dd id="config-status">检查中</dd></dl><p class="field-hint" id="config-hint">使用项目现有配置。</p></section>
+        <section class="history-section"><div class="side-heading"><h2>最近任务</h2><button class="text-button" id="refresh-jobs" type="button">刷新</button></div><p id="history-empty" class="field-hint">还没有网页任务。</p><div id="job-history"></div></section>
+        <section class="reading-note"><h2>结果来自哪里</h2><p>原始消息经过解析与排序，再连续分块。模型逐块提取证据，汇总后生成关系分析与人物侧写。</p><p>结果中保留支持、反证与存疑，帮助理解，不代替沟通。</p></section>
+      </aside>
+    </div>
+  </main>
+  <footer class="site-footer"><span>Dialograph / 对话分析</span><span>本地存储 · 完整分析调用已配置的模型服务</span></footer>
+</div>
+<noscript>此分析工作区需要启用 JavaScript。</noscript>
+</body></html>

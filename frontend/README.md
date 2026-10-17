@@ -1,0 +1,42 @@
+# Dialograph 本地分析工作区
+
+界面沿用参考博客的暖白底色、衬线标题和细线双栏排版，功能直接连接现有 Python 工作流。没有前端依赖安装或构建步骤，需要 Python 3.10+。
+
+在项目根目录运行：
+
+```powershell
+python agent/web_app.py
+```
+
+打开 http://127.0.0.1:5173 。端口被占用时使用 `python agent/web_app.py --port 5174`。请使用这个入口，直接打开 HTML 或使用静态文件服务不能执行分析。
+
+## 使用流程
+
+1. 从本地 `talks/` 选择对话，或点击“导入 JSON”。导入会创建唯一文件名，不覆盖原文件。
+2. 选择“仅预处理”或“完整分析”，然后启动。
+3. 查看真实阶段、当前分块、已完成分块数和运行日志。没有按时间估算的假进度。
+4. 阅读统计图表、关系分析、人物侧写、结构化证据等结果；可下载当前文件。
+
+仅预处理在本机完成，不调用模型。完整分析读取根目录 `.env` 的 `LLM_API_BASE`、`LLM_API_KEY`、`LLM_MODEL`，向配置的模型服务发送对话材料。页面显示模型和服务地址，不返回密钥。修改 `.env` 后重启服务。
+
+当前接受现有分析器支持的 WeFlow 原始导出，单文件上限 50 MB：顶层包含 `messages` 数组与可选 `session` 对象；消息包含 `type`、`content`、`isSend`、`formattedTime`、可选 `createTime`。不将 QQChatExporter 或 `text/sender` 清洗格式误当作兼容输入，格式不匹配会提示。
+
+## 任务与结果
+
+- 一次运行一个网页任务；关闭页面不停止后台分析。页面重开后可从“最近任务”查看状态。
+- 可停止任务，已完成的分块保留。失败、停止或中断后可继续；恢复使用该 run 的实际分块参数，并复用已通过完整性检查的产物。
+- 每个网页任务在 `analysis/web_jobs/{job_id}/` 保存输入快照、请求参数、状态和 `output/` 产物。与命令行的兼容输出路径分开，避免同名对象或新任务覆盖旧结果。
+- 完整分析复用 `build_artifacts`、`run_single_workflow_with_auto_shrink`、`generate_persona_report`、`audit_artifacts`。最终通过检查后才显示为完成。
+- 网页任务历史只包含由网页创建的任务；已有命令行报告目前不会自动导入。
+- 页面支持 Markdown 的标题、段落、列表、引用、粗体、行内代码、代码块和表格；JSON 以格式化文本显示。报告内 HTML 不执行。
+
+服务仅监听 `127.0.0.1`，只开放前端静态文件及白名单结果接口；不把项目根目录作为静态目录。`talks/`、`analysis/`、`.env` 继续由 Git 忽略。
+
+## 验证
+
+```powershell
+python -m unittest discover -s tests -v
+node --check frontend/app.js
+```
+
+测试使用合成数据。HTTP 集成测试启动本机临时服务；完整流程单元测试替换模型响应，不产生模型费用。`tests/fixtures/web_smoke.json` 可用于手动网页验证；选择完整分析会实际调用配置的模型。
