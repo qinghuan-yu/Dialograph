@@ -11,6 +11,7 @@ from http.server import ThreadingHTTPServer
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent'))
 from web_app import WebService, make_handler
+from test_conversation_formats import ALPHA_CHAT, canonical_chat
 
 
 class WebHTTPTests(unittest.TestCase):
@@ -47,12 +48,34 @@ class WebHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/talks/private.json')[0], 404)
 
     def test_import_preprocess_poll_and_download(self):
-        headers = {'X-Dialograph-Token': self.service.token, 'Content-Type': 'application/json'}
         fixture = Path(__file__).parent / 'fixtures' / 'web_smoke.json'
-        code, raw = self.request('POST', '/api/import?name=smoke.json', fixture.read_bytes(), headers)
+        self.assert_preprocess_upload('smoke.json', fixture.read_bytes(), 12)
+
+    def test_alpha_and_canonical_import_preprocess_poll_and_download(self):
+        self.assert_preprocess_upload('alpha.md', ALPHA_CHAT.encode('utf-8'), 3)
+        self.assert_preprocess_upload('canonical.json', json.dumps(canonical_chat()).encode('utf-8'), 2)
+
+    def test_custom_redaction_terms_reach_worker_and_downloaded_report(self):
+        data = canonical_chat()
+        data['messages'][0]['content'] = '合成单位 电话13800138000'
+        job_id = self.assert_preprocess_upload('privacy.json', json.dumps(data).encode('utf-8'), 2,
+                                               redaction_terms=['合成单位'])
+        headers = {'X-Dialograph-Token': self.service.token}
+        code, raw = self.request('GET', f'/api/outputs/{job_id}/preprocess', headers=headers)
+        self.assertEqual(code, 200)
+        content = json.loads(raw)['content']
+        self.assertNotIn('合成单位', content)
+        self.assertNotIn('13800138000', content)
+        self.assertIn('[自定义1]', content)
+        self.assertIn('[手机号1]', content)
+
+    def assert_preprocess_upload(self, name, content, expected_count, redaction_terms=None):
+        headers = {'X-Dialograph-Token': self.service.token, 'Content-Type': 'application/octet-stream'}
+        code, raw = self.request('POST', '/api/import?name=' + name, content, headers)
         self.assertEqual(code, 201)
         chat = json.loads(raw)
-        code, raw = self.request('POST', '/api/jobs', json.dumps({'chat_id': chat['id'], 'mode': 'preprocess'}), headers)
+        code, raw = self.request('POST', '/api/jobs', json.dumps({'chat_id': chat['id'], 'mode': 'preprocess',
+                                                               'redaction_terms': redaction_terms or []}), headers)
         self.assertEqual(code, 202)
         job_id = json.loads(raw)['id']
         deadline = time.monotonic() + 15
@@ -63,13 +86,14 @@ class WebHTTPTests(unittest.TestCase):
                 break
             time.sleep(.05)
         self.assertEqual(state['status'], 'completed', state.get('message'))
-        self.assertEqual(state['stats']['total_messages'], 12)
+        self.assertEqual(state['stats']['total_messages'], expected_count)
         code, raw = self.request('GET', f'/api/outputs/{job_id}/stats?download=1', headers=headers)
         self.assertEqual(code, 200)
-        self.assertEqual(json.loads(raw)['total_messages'], 12)
+        self.assertEqual(json.loads(raw)['total_messages'], expected_count)
         self.assertEqual(self.request('GET', f'/api/outputs/{job_id}/secret', headers=headers)[0], 400)
         restored = WebService(self.root)
         self.assertEqual(restored.snapshot(job_id)['status'], 'completed')
+        return job_id
 
     def test_invalid_json_shapes_return_errors_without_starting_a_job(self):
         headers = {'X-Dialograph-Token': self.service.token, 'Content-Type': 'application/json'}

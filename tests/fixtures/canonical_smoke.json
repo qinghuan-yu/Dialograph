@@ -1,0 +1,13 @@
+{
+  "schema": "dialograph.conversation",
+  "version": 1,
+  "session": {"id": "peer_test", "type": "private", "display_name": "合成对象"},
+  "participants": [
+    {"id": "self_test", "role": "me", "name": "合成用户"},
+    {"id": "peer_test", "role": "other", "name": "合成对象"}
+  ],
+  "messages": [
+    {"id": "m1", "sender_id": "self_test", "time": "2026-10-28 09:00:00", "type": "text", "content": "测试第一行\n测试第二行"},
+    {"id": "m2", "sender_id": "peer_test", "time": "2026-10-28 09:01:00", "type": "quote", "content": "收到\n引用：合成用户：测试第一行"}
+  ]
+}

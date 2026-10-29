@@ -12,8 +12,12 @@ from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'agent'))
+import evidence_validation
 import artifact_audit
-import run_workflow as workflow
+import chunk_pipeline as workflow
+import analysis_artifacts
+import analysis_service
+import llm_client
 import run_single_pass_analysis as preview_analysis
 import run_single_pass_persona as preview_persona
 import web_app
@@ -54,8 +58,9 @@ class ResultProtectionTests(unittest.TestCase):
                      patch.object(sys, 'argv', ['preview', 'sample']), redirect_stdout(io.StringIO()):
                     self.assertEqual(module.main(), 0)
             self.assertTrue(all(p.read_text(encoding='utf-8') == 'FULL REPORT' for p in originals))
-            self.assertTrue((output / '预览' / '人物侧写_测试对象.md').is_file())
-            self.assertIn('预览', (output / '预览' / '人物侧写_测试对象.md').read_text(encoding='utf-8'))
+            previews = list((output / '预览').glob('人物侧写_*.md'))
+            self.assertEqual(len(previews), 1)
+            self.assertIn('预览', previews[0].read_text(encoding='utf-8'))
 
     def test_batch_entry_never_deletes_existing_analysis(self):
         batch = (ROOT / '一键运行全部分析.bat').read_text(encoding='utf-8').lower()
@@ -81,9 +86,9 @@ class InputAndEvidenceTests(unittest.TestCase):
             warnings = ['events 摘要覆盖缩减，完整条目仍在总表。']
             events = []
             with patch.object(web_worker, 'load_llm_config', return_value=CONFIG), \
-                 patch.object(web_worker, 'audit_artifacts', side_effect=[SimpleNamespace(ok=False), SimpleNamespace(ok=True, warnings=warnings)]), \
-                 patch.object(workflow, 'run_single_workflow_with_auto_shrink'), \
-                 patch.object(workflow, 'generate_persona_report'):
+                 patch.object(analysis_service, 'audit_artifacts', side_effect=[SimpleNamespace(ok=False), SimpleNamespace(ok=True, warnings=warnings)]), \
+                 patch.object(workflow, 'run_single_workflow_with_auto_shrink', return_value={}), \
+                 patch.object(analysis_service, 'generate_persona_report'):
                 result = web_worker.run_job(root, directory, {'mode': 'full'}, events.append)
             self.assertEqual(result.get('warnings'), warnings)
             self.assertTrue(any('覆盖缩减' in event.get('message', '') for event in events))
@@ -118,24 +123,24 @@ class InputAndEvidenceTests(unittest.TestCase):
 
     def test_summary_spans_time_axis_when_chunks_exceed_budget(self):
         documents = [{'chunk_index': i, 'events': [{'summary': str(i)}]} for i in range(70)]
-        items = workflow.flatten_evidence_items(documents, 'events', 60)
+        items = evidence_validation.balanced_items(documents, 'events', 60)
         self.assertEqual(len(items), 60)
         self.assertEqual(items[0]['chunk_index'], 0)
         self.assertEqual(items[-1]['chunk_index'], 69)
 
     def test_non_transient_report_failure_is_not_retried(self):
-        with patch.object(workflow, 'call_llm_with_retry_result', side_effect=ValueError('invalid')) as api:
+        with patch.object(llm_client, 'call_llm_with_retry_result', side_effect=ValueError('invalid')) as api:
             with self.assertRaises(ValueError):
-                workflow.generate_marked_report(CONFIG, 'skill', 'prompt', 10,
+                llm_client.generate_marked_report(CONFIG, 'skill', 'prompt', 10,
                     '<!-- END_FINAL_REPORT -->', 'report', 4800, retry_sleep_seconds=0)
         self.assertEqual(api.call_count, 1)
 
     def test_invalid_or_oversized_report_requests_are_not_retried_unchanged(self):
         for code in (400, 401, 413):
-            with self.subTest(code=code), patch.object(workflow, 'call_llm_with_retry_result',
+            with self.subTest(code=code), patch.object(llm_client, 'call_llm_with_retry_result',
                     side_effect=HTTPError('https://test.invalid', code, 'invalid', {}, None)) as api:
                 with self.assertRaises(HTTPError):
-                    workflow.generate_marked_report(CONFIG, 'skill', 'prompt', 10,
+                    llm_client.generate_marked_report(CONFIG, 'skill', 'prompt', 10,
                         '<!-- END_FINAL_REPORT -->', 'report', 4800, retry_sleep_seconds=0)
                 self.assertEqual(api.call_count, 1)
 
@@ -146,7 +151,7 @@ class InputAndEvidenceTests(unittest.TestCase):
             del data['messages'][0]['isSend']
             source.write_text(json.dumps(data), encoding='utf-8')
             with self.assertRaises(ValueError):
-                workflow.build_artifacts(source, out)
+                analysis_artifacts.build_artifacts(source, out)
             self.assertFalse(out.exists())
 
     def test_web_rejects_group_session_and_multiple_other_ids(self):
@@ -183,16 +188,16 @@ class InputAndEvidenceTests(unittest.TestCase):
     def test_summary_is_balanced_across_chunks_and_discloses_omission(self):
         docs = [{**{key: [] for key in KEYS}, 'chunk_index': i, 'parse_status': 'ok',
                  'events': [{'summary': f'item-{i}-{j}'} for j in range(70)]} for i in (1, 2)]
-        items = workflow.flatten_evidence_items(docs, 'events', 60)
+        items = evidence_validation.balanced_items(docs, 'events', 60)
         self.assertEqual({item['chunk_index'] for item in items}, {1, 2})
         summary = workflow.format_evidence_summary(docs)
         self.assertIn('总数 140', summary)
         self.assertIn('省略 80', summary)
 
     def test_final_report_retries_transient_network_failure(self):
-        response = workflow.LLMRetryResult('done <!-- END_FINAL_REPORT -->', 4800)
-        with patch.object(workflow, 'call_llm_with_retry_result', side_effect=[TimeoutError('timeout'), response]) as api:
-            result = workflow.generate_marked_report(CONFIG, 'skill', 'prompt', 10,
+        response = llm_client.LLMRetryResult('done <!-- END_FINAL_REPORT -->', 4800)
+        with patch.object(llm_client, 'call_llm_with_retry_result', side_effect=[TimeoutError('timeout'), response]) as api:
+            result = llm_client.generate_marked_report(CONFIG, 'skill', 'prompt', 10,
                 '<!-- END_FINAL_REPORT -->', 'report', 4800, retry_sleep_seconds=0)
         self.assertIn('END_FINAL_REPORT', result)
         self.assertEqual(api.call_count, 2)
@@ -200,23 +205,25 @@ class InputAndEvidenceTests(unittest.TestCase):
 
 class ResumeTests(unittest.TestCase):
     def setUp(self):
-        guard = patch.object(workflow, 'call_llm', side_effect=AssertionError('tests must not call a provider'))
+        guard = patch.object(llm_client, 'call_llm', side_effect=AssertionError('tests must not call a provider'))
         guard.start()
         self.addCleanup(guard.stop)
 
-    def test_web_resume_rejects_legacy_metadata_before_dispatch(self):
+    def test_web_automatic_resume_skips_legacy_metadata_before_dispatch(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             directory = root / 'job'
             directory.mkdir()
             (directory / 'input.json').write_text(json.dumps(chat()), encoding='utf-8')
-            run = directory / 'output' / '临时文件' / '测试对象' / 'runs' / 'legacy'
+            artifacts = analysis_artifacts.build_artifacts(directory / 'input.json', directory / 'output')
+            run = artifacts['runs_dir'] / 'legacy'
             run.mkdir(parents=True)
             (run / 'run_metadata.json').write_text('{}', encoding='utf-8')
             with patch.object(web_worker, 'load_llm_config', return_value=CONFIG), \
-                 patch.object(workflow, 'run_single_workflow_with_auto_shrink', side_effect=RuntimeError('should not dispatch')):
-                with self.assertRaisesRegex(ValueError, '旧|元数据'):
+                 patch.object(workflow, 'run_single_workflow_with_auto_shrink', side_effect=RuntimeError('new run')) as dispatch:
+                with self.assertRaisesRegex(RuntimeError, 'new run'):
                     web_worker.run_job(root, directory, {'mode': 'full', 'resume': True}, lambda event: None)
+                self.assertIsNone(dispatch.call_args.kwargs['resume_run_id'])
 
     def test_failed_run_audit_cannot_replace_an_existing_full_report(self):
         with tempfile.TemporaryDirectory() as tmp:
@@ -271,7 +278,7 @@ class ResumeTests(unittest.TestCase):
     def prepare(self, root):
         source = root / 'input.json'
         source.write_text(json.dumps(chat()), encoding='utf-8')
-        return workflow.build_artifacts(source, root / 'out')
+        return analysis_artifacts.build_artifacts(source, root / 'out')
 
     def interrupted_run(self, artifacts):
         with patch.object(workflow, 'generate_chunk_analysis', side_effect=RuntimeError('stop')):
@@ -304,7 +311,7 @@ class ResumeTests(unittest.TestCase):
             data = chat()
             data['messages'][0]['content'] = 'changed'
             artifacts['chat_file'].write_text(json.dumps(data), encoding='utf-8')
-            changed = workflow.build_artifacts(artifacts['chat_file'], Path(tmp) / 'out')
+            changed = analysis_artifacts.build_artifacts(artifacts['chat_file'], Path(tmp) / 'out')
             with patch.object(workflow, 'generate_chunk_analysis', side_effect=AssertionError('no api')):
                 with self.assertRaisesRegex(ValueError, '输入|指纹'):
                     workflow.run_single_workflow(changed, 'skill', CONFIG, 5, resume_run_id=run.name)

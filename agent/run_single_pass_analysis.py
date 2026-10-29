@@ -4,21 +4,16 @@ from __future__ import annotations
 
 import sys
 from pathlib import Path
-from urllib import error
-import http.client
 
 sys.path.insert(0, str(Path(__file__).parent))
 
 from analyze import extract_conversation_segments, extract_text_samples  # noqa: E402
 from config import load_llm_config  # noqa: E402
 from report_output import write_report  # noqa: E402
-from run_workflow import (  # noqa: E402
-    build_artifacts,
-    call_llm_with_retry,
-    load_skill_prompt,
-    should_retry_with_smaller_prompt,
-)
-
+from privacy_redaction import redact_artifact_call
+from llm_client import call_llm_with_retry, should_retry_with_smaller_prompt
+from analysis_artifacts import build_artifacts, select_chat_files
+from report_generation import load_skill_prompt
 
 def compact_segments(segments: list[list[dict]], max_messages_per_segment: int = 18) -> str:
     lines = []
@@ -112,6 +107,7 @@ def build_single_pass_prompt(name: str, stats_summary: str, segment_text: str, s
 """
 
 
+@redact_artifact_call(position=2)
 def generate_report_with_fallback(llm_config, skill_prompt: str, artifacts: dict) -> str:
     primary_prompt = build_single_pass_prompt(
         artifacts["name"],
@@ -170,7 +166,7 @@ def main() -> int:
         print("LLM_API_KEY 未设置，无法执行单次关系分析。")
         return 1
 
-    talks = sorted((workspace / "talks").glob("*.json"))
+    talks = select_chat_files(workspace / "talks", [], None)
     target_file = None
     for talk in talks:
         if target in talk.stem:

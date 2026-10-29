@@ -33,11 +33,11 @@ function showError(selector, error) {
 async function loadFiles(selectId) {
   const files = await api("/api/conversations");
   const select = $("#conversation"), previous = selectId || select.value;
-  select.replaceChildren(new Option(files.length ? "请选择一份对话" : "暂无文件，请导入 JSON", ""));
+  select.replaceChildren(new Option(files.length ? "请选择一份对话" : "暂无文件，请导入对话", ""));
   files.forEach(file => select.add(new Option(`${file.name} · ${(file.bytes / 1024).toFixed(0)} KB`, file.id)));
   if (files.some(file => file.id === previous)) select.value = previous;
   select.disabled = !files.length;
-  $("#file-hint").textContent = files.length ? `找到 ${files.length} 份本地 JSON。分析前会检查是否为支持的 WeFlow 格式。` : "读取 talks 文件夹，或导入 WeFlow 原始导出的 JSON。";
+  $("#file-hint").textContent = files.length ? `找到 ${files.length} 份本地对话。分析前会检查格式与发送者归属。` : "支持 WeFlow JSON、统一协议 JSON 和 Alpha Markdown 私聊导出。";
   updateForm();
 }
 function updateForm() {
@@ -78,7 +78,8 @@ function renderStats(job) {
     row.append(element("span", month.month), meter, element("span", `${month.my_count} / ${month.other_count}`)); chart.append(row);
   });
   const diagnostics = job.diagnostics || {};
-  $("#diagnostic-summary").textContent = `${stats.first_date} 至 ${stats.last_date} · 跳过 ${diagnostics.skipped_message_count || 0} 条 · 时间格式异常 ${diagnostics.invalid_time_message_count || 0} 条。会话按 ${stats.session_gap_hours} 小时间隔划分。`;
+  const redactionCount = Object.values(diagnostics.redaction?.replacement_counts || {}).reduce((sum, value) => sum + value, 0);
+  $("#diagnostic-summary").textContent = `${stats.first_date} 至 ${stats.last_date} · 跳过 ${diagnostics.skipped_message_count || 0} 条 · 时间格式异常 ${diagnostics.invalid_time_message_count || 0} 条。会话按 ${stats.session_gap_hours} 小时间隔划分。${diagnostics.redaction?.enabled ? ` 已启用脱敏，识别替换 ${redactionCount} 处。` : ""}`;
 }
 function renderJob(job) {
   if (!job) return;
@@ -186,7 +187,8 @@ async function poll() {
 $("#analysis-form").addEventListener("submit", async event => {
   event.preventDefault(); state.submitting = true; updateForm(); showError("#form-error", null);
   try {
-    const job = await post("/api/jobs", { chat_id: $("#conversation").value, mode: $("input[name=mode]:checked").value, chunk_size: Number($("#chunk-size").value), timeout: Number($("#timeout").value) });
+    const redactionTerms = $("#redaction-terms").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
+    const job = await post("/api/jobs", { chat_id: $("#conversation").value, mode: $("input[name=mode]:checked").value, chunk_size: Number($("#chunk-size").value), timeout: Number($("#timeout").value), redaction_terms: redactionTerms });
     await refreshJobs(); selectJob(job.id);
   } catch (error) { showError("#form-error", error); }
   finally { state.submitting = false; updateForm(); }
@@ -201,9 +203,9 @@ $("#file-input").addEventListener("change", async event => {
   showError("#form-error", null); $("#import-button").disabled = true; $("#import-button").textContent = "正在导入…";
   try {
     if (file.size > 50 * 1024 * 1024) throw new Error("文件超过 50 MB，请先拆分导出。");
-    const result = await api(`/api/import?name=${encodeURIComponent(file.name)}`, { method: "POST", headers: { "Content-Type": "application/json" }, body: file }); await loadFiles(result.id);
+    const result = await api(`/api/import?name=${encodeURIComponent(file.name)}`, { method: "POST", headers: { "Content-Type": file.name.toLowerCase().endsWith(".md") ? "text/markdown;charset=utf-8" : "application/json" }, body: file }); await loadFiles(result.id);
   } catch (error) { showError("#form-error", error); }
-  finally { $("#import-button").disabled = false; $("#import-button").textContent = "导入 JSON"; event.target.value = ""; }
+  finally { $("#import-button").disabled = false; $("#import-button").textContent = "导入对话"; event.target.value = ""; }
 });
 $("#cancel-button").addEventListener("click", async () => {
   try { await post("/api/cancel", { id: state.selected }); await refreshJobs(); }

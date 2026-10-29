@@ -15,7 +15,9 @@ sys.path.insert(0, str(AGENT_DIR))
 import analyze  # noqa: E402
 import artifact_audit  # noqa: E402
 import output_paths  # noqa: E402
-import run_workflow  # noqa: E402
+import chunk_pipeline as run_workflow  # noqa: E402
+import report_generation
+import llm_client
 
 
 def message(index: int, content: str = "hello") -> dict:
@@ -137,7 +139,7 @@ class ChunkingTests(unittest.TestCase):
         self.assertGreater(len(chunks), 1)
 
     def test_final_prompt_is_budgeted_for_large_summaries(self) -> None:
-        prompt = run_workflow.build_final_prompt(
+        prompt = report_generation.build_final_prompt(
             "Other",
             "s" * 20000,
             "c" * 20000,
@@ -151,7 +153,7 @@ class ChunkingTests(unittest.TestCase):
         self.assertEqual(run_workflow.FINAL_REPORT_MAX_OUTPUT_TOKENS, 4800)
 
     def test_persona_prompt_requires_neutral_pronouns(self) -> None:
-        prompt = run_workflow.build_persona_prompt(
+        prompt = report_generation.build_persona_prompt(
             "Other",
             "stats",
             "coverage",
@@ -220,7 +222,7 @@ class EvidenceCompletenessTests(unittest.TestCase):
         original_call = run_workflow.call_llm_with_retry_result
         try:
             def fake_call(*args, **kwargs):
-                return run_workflow.LLMRetryResult(
+                return llm_client.LLMRetryResult(
                     content=complete_chunk_json_text(),
                     max_tokens_used=4800,
                 )
@@ -245,20 +247,20 @@ class EvidenceCompletenessTests(unittest.TestCase):
             run_workflow.require_completion_marker("not done", "<!-- END_FINAL_REPORT -->", "report")
 
     def test_marked_report_retries_when_marker_is_missing(self) -> None:
-        original_call = run_workflow.call_llm_with_retry_result
+        original_call = llm_client.call_llm_with_retry_result
         calls = []
         try:
             def fake_call(*args, **kwargs):
                 calls.append(kwargs["max_tokens"])
                 if len(calls) == 1:
-                    return run_workflow.LLMRetryResult(content="not done", max_tokens_used=kwargs["max_tokens"])
-                return run_workflow.LLMRetryResult(
+                    return llm_client.LLMRetryResult(content="not done", max_tokens_used=kwargs["max_tokens"])
+                return llm_client.LLMRetryResult(
                     content="done <!-- END_FINAL_REPORT -->",
                     max_tokens_used=kwargs["max_tokens"],
                 )
 
-            run_workflow.call_llm_with_retry_result = fake_call
-            report = run_workflow.generate_marked_report(
+            llm_client.call_llm_with_retry_result = fake_call
+            report = llm_client.generate_marked_report(
                 object(),
                 "skill",
                 "prompt",
@@ -269,26 +271,26 @@ class EvidenceCompletenessTests(unittest.TestCase):
                 retry_sleep_seconds=0,
             )
         finally:
-            run_workflow.call_llm_with_retry_result = original_call
+            llm_client.call_llm_with_retry_result = original_call
 
         self.assertEqual(report, "done <!-- END_FINAL_REPORT -->")
         self.assertEqual(calls, [4800, 8000])
 
     def test_marked_report_retries_when_provider_reports_truncation(self) -> None:
-        original_call = run_workflow.call_llm_with_retry_result
+        original_call = llm_client.call_llm_with_retry_result
         calls = []
         try:
             def fake_call(*args, **kwargs):
                 calls.append(kwargs["max_tokens"])
                 if len(calls) == 1:
-                    raise run_workflow.LLMOutputTruncated("truncated")
-                return run_workflow.LLMRetryResult(
+                    raise llm_client.LLMOutputTruncated("truncated")
+                return llm_client.LLMRetryResult(
                     content="done <!-- END_FINAL_REPORT -->",
                     max_tokens_used=kwargs["max_tokens"],
                 )
 
-            run_workflow.call_llm_with_retry_result = fake_call
-            report = run_workflow.generate_marked_report(
+            llm_client.call_llm_with_retry_result = fake_call
+            report = llm_client.generate_marked_report(
                 object(),
                 "skill",
                 "prompt",
@@ -299,7 +301,7 @@ class EvidenceCompletenessTests(unittest.TestCase):
                 retry_sleep_seconds=0,
             )
         finally:
-            run_workflow.call_llm_with_retry_result = original_call
+            llm_client.call_llm_with_retry_result = original_call
 
         self.assertEqual(report, "done <!-- END_FINAL_REPORT -->")
         self.assertEqual(calls, [4800, 8000])
@@ -320,7 +322,7 @@ class MergeCheckpointTests(unittest.TestCase):
 
                 def fake_call(*args, **kwargs):
                     calls.append((args, kwargs))
-                    return run_workflow.LLMRetryResult(
+                    return llm_client.LLMRetryResult(
                         content="new summary\n<!-- END_MERGE_SUMMARY -->",
                         max_tokens_used=run_workflow.MERGE_MAX_OUTPUT_TOKENS,
                     )
@@ -354,7 +356,7 @@ class MergeCheckpointTests(unittest.TestCase):
 
                 def fake_call(*args, **kwargs):
                     calls.append((args, kwargs))
-                    return run_workflow.LLMRetryResult(
+                    return llm_client.LLMRetryResult(
                         content="new summary\n<!-- END_MERGE_SUMMARY -->",
                         max_tokens_used=run_workflow.MERGE_MAX_OUTPUT_TOKENS,
                     )
@@ -384,7 +386,7 @@ class MergeCheckpointTests(unittest.TestCase):
 
             def fake_call(*args, **kwargs):
                 calls.append((args, kwargs))
-                return run_workflow.LLMRetryResult(
+                return llm_client.LLMRetryResult(
                     content=f"summary {len(calls)}\n<!-- END_MERGE_SUMMARY -->",
                     max_tokens_used=6400 if len(calls) == 1 else kwargs["max_tokens"],
                 )

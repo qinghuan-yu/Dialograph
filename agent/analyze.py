@@ -3,26 +3,23 @@
 解析 WeFlow 导出的 JSON 聊天记录，提取结构化统计数据供 agent 深度分析。
 """
 
-import json
-import os
 import sys
-from datetime import datetime, timedelta
+from datetime import datetime
 from collections import Counter, defaultdict
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 
-from output_paths import get_support_output_dir, sanitize_filename
-from conversation_input import validate_weflow
+from conversation_formats import read_conversation
+from evidence_grounding import identify_messages
 
 TIME_FORMAT = "%Y-%m-%d %H:%M:%S"
 DEFAULT_SESSION_GAP_HOURS = 4
 
 
 def load_chat(filepath: str) -> dict:
-    """加载聊天记录 JSON 文件"""
-    with open(filepath, "r", encoding="utf-8-sig") as f:
-        return validate_weflow(json.load(f))
+    """读取并校验受支持的聊天导出文件。"""
+    return read_conversation(Path(filepath).read_bytes(), filepath)
 
 
 def normalize_timestamp(value) -> float | None:
@@ -87,6 +84,8 @@ def parse_message(msg: dict, original_index: int | None = None) -> dict | None:
     }
     if original_index is not None:
         base["original_index"] = original_index
+    if "source_message_id" in msg:
+        base["source_message_id"] = msg["source_message_id"]
 
     # 跳过无内容的系统消息和图片消息（内容为null）
     if msg_type == "系统消息":
@@ -118,7 +117,7 @@ def parse_message(msg: dict, original_index: int | None = None) -> dict | None:
     return None
 
 
-def parse_chat_messages(raw_messages: list[dict]) -> dict:
+def parse_chat_messages(raw_messages: list[dict], session: dict | None = None) -> dict:
     """Parse, sort, and diagnose raw exported messages."""
     parsed_messages = []
     skip_reasons = Counter()
@@ -138,9 +137,11 @@ def parse_chat_messages(raw_messages: list[dict]) -> dict:
     ]
     invalid_time_count = sum(1 for message in sorted_messages if not message.get("time_valid"))
     invalid_timestamp_count = sum(1 for message in sorted_messages if not message.get("timestamp_valid"))
+    source_id = identify_messages(raw_messages, sorted_messages, session)
 
     return {
         "messages": sorted_messages,
+        "source_id": source_id,
         "diagnostics": {
             "raw_message_count": len(raw_messages),
             "parsed_message_count": len(sorted_messages),
@@ -619,120 +620,10 @@ def format_full_transcript(messages: list[dict], session: dict) -> str:
 
 
 def main():
-    """主函数"""
-    workspace = Path(__file__).parent.parent
-    talks_dir = workspace / "talks"
-    output_dir = workspace / "analysis"
-    output_dir.mkdir(exist_ok=True)
-
-    # 列出所有聊天记录文件
-    json_files = list(talks_dir.glob("*.json"))
-    if not json_files:
-        print("未找到聊天记录文件，请检查 talks/ 目录。")
-        sys.exit(1)
-
-    print("=" * 50)
-    print("可用的聊天记录：")
-    print("=" * 50)
-    for i, f in enumerate(json_files):
-        data = load_chat(str(f))
-        session = data.get("session", {})
-        name = session.get("displayName", session.get("nickname", f.stem))
-        count = session.get("messageCount", len(data.get("messages", [])))
-        print(f"  [{i+1}] {name} ({count}条消息) - {f.name}")
-
-    # 选择要分析的聊天记录
-    if len(sys.argv) > 1:
-        try:
-            choice = int(sys.argv[1]) - 1
-        except ValueError:
-            # 尝试按文件名匹配
-            target = sys.argv[1]
-            choice = None
-            for i, f in enumerate(json_files):
-                if target in f.stem:
-                    choice = i
-                    break
-            if choice is None:
-                print(f"无法匹配: {target}")
-                sys.exit(1)
-    else:
-        try:
-            choice = int(input("\n请输入要分析的编号: ")) - 1
-        except (ValueError, EOFError):
-            choice = 0
-
-    if choice < 0 or choice >= len(json_files):
-        print("无效选择")
-        sys.exit(1)
-
-    selected_file = json_files[choice]
-    print(f"\n正在分析: {selected_file.name}")
-
-    # 加载数据
-    data = load_chat(str(selected_file))
-    session = data.get("session", {})
-    raw_messages = data.get("messages", [])
-
-    # 解析消息
-    parse_result = parse_chat_messages(raw_messages)
-    messages = parse_result["messages"]
-    parse_diagnostics = parse_result["diagnostics"]
-
-    print(f"有效消息数: {len(messages)}")
-    if parse_diagnostics["sort_changed"]:
-        print("提示：原始消息顺序已按时间戳重新排序。")
-    if parse_diagnostics["skipped_message_count"] or parse_diagnostics["invalid_time_message_count"]:
-        print(f"解析诊断: 跳过{parse_diagnostics['skipped_message_count']}条, 时间异常{parse_diagnostics['invalid_time_message_count']}条")
-    if not messages:
-        print(f"没有可分析的有效消息，解析诊断: {parse_diagnostics}")
-        sys.exit(1)
-
-    # 计算统计
-    stats = compute_statistics(messages, session)
-
-    # 提取样本
-    samples = extract_text_samples(messages, n_samples=150)
-    segments = extract_conversation_segments(messages, n_segments=15)
-
-    # 生成报告
-    report = format_statistics_report(stats, samples, segments)
-
-    # 保存预处理报告
-    name = session.get("displayName", session.get("nickname", "unknown"))
-    support_dir = get_support_output_dir(output_dir, sanitize_filename(name))
-    support_dir.mkdir(parents=True, exist_ok=True)
-
-    preproc_file = support_dir / f"预处理_{name}.txt"
-    with open(preproc_file, "w", encoding="utf-8") as f:
-        f.write(report)
-
-    print(f"\n预处理统计报告已保存: {preproc_file}")
-
-    # 保存原始统计数据为 JSON（供 agent 使用）
-    stats_file = support_dir / f"统计_{name}.json"
-    with open(stats_file, "w", encoding="utf-8") as f:
-        json.dump(stats, f, ensure_ascii=False, indent=2)
-
-    print(f"统计数据已保存: {stats_file}")
-
-    diagnostics_file = support_dir / f"解析诊断_{sanitize_filename(name)}.json"
-    with open(diagnostics_file, "w", encoding="utf-8") as f:
-        json.dump(parse_diagnostics, f, ensure_ascii=False, indent=2)
-    print(f"解析诊断已保存: {diagnostics_file}")
-
-    # 输出关键指标摘要
-    print("\n" + "=" * 50)
-    print("关键指标摘要")
-    print("=" * 50)
-    print(f"聊天跨度: {stats['first_date']} ~ {stats['last_date']}")
-    print(f"活跃天数: {stats['active_days']}天")
-    print(f"消息比例: 我{stats['my_message_count']} : 对方{stats['other_message_count']}")
-    print(f"主动发起: 我{stats['daily_first_msg'].get('me',0)}天 : 对方{stats['daily_first_msg'].get('other',0)}天")
-    print(f"平均回复: 我{stats['reply_time_my_avg_seconds']}秒 : 对方{stats['reply_time_other_avg_seconds']}秒")
-    print(f"表情使用: 我{stats['my_emoji_count']}次 : 对方{stats['other_emoji_count']}次")
-
-    return stats, report
+    from preprocess_cli import run_preprocessing_cli
+    return run_preprocessing_cli(Path(__file__).parent.parent,
+                                 sys.argv[1] if len(sys.argv) > 1 else None,
+                                 include_preview_prompt=False)
 
 
 if __name__ == "__main__":

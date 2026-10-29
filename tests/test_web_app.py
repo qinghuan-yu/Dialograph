@@ -9,7 +9,10 @@ from types import SimpleNamespace
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent'))
 from web_app import WebService, validate_chat
 from web_worker import run_job, progress_from_line, ProgressStream
-import run_workflow as workflow
+import chunk_pipeline as workflow
+import analysis_artifacts
+import report_generation
+import llm_client
 from workflow_state import run_identity
 
 
@@ -53,7 +56,7 @@ class WebAppTests(unittest.TestCase):
         source = job_dir / 'input.json'
         source.write_text(json.dumps(sample_chat()), encoding='utf-8')
         events = []
-        with patch('run_workflow.call_llm', side_effect=AssertionError('must remain local')):
+        with patch('llm_client.call_llm', side_effect=AssertionError('must remain local')):
             result = run_job(self.root, job_dir, {'mode': 'preprocess'}, events.append)
         self.assertEqual(result['stats']['total_messages'], 4)
         self.assertEqual(result['stats']['session_count'], 1)
@@ -81,13 +84,13 @@ class WebAppTests(unittest.TestCase):
         responses = [chunk, '# 关系报告\n测试结果。\n<!-- END_FINAL_REPORT -->',
                      '# 人物侧写\n测试结果。\n<!-- END_PERSONA_REPORT -->']
         config = SimpleNamespace(api_base='https://test.invalid', api_key='test-only', model='test-model')
-        with patch('web_worker.load_llm_config', return_value=config), patch('run_workflow.call_llm', side_effect=responses) as llm:
+        with patch('web_worker.load_llm_config', return_value=config), patch('llm_client.call_llm', side_effect=responses) as llm:
             result = run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
         self.assertEqual(llm.call_count, 3)
         self.assertEqual(set(result['files']), {'analysis', 'persona', 'evidence', 'summary', 'coverage', 'manifest', 'stats', 'diagnostics', 'preprocess'})
         manifest = json.loads((job_dir / result['files']['manifest']['path']).read_text(encoding='utf-8'))
         self.assertEqual(sum(row['message_count'] for row in manifest), 4)
-        with patch('web_worker.load_llm_config', return_value=config), patch('run_workflow.call_llm', side_effect=AssertionError('must reuse completed reports')):
+        with patch('web_worker.load_llm_config', return_value=config), patch('llm_client.call_llm', side_effect=AssertionError('must reuse completed reports')):
             resumed = run_job(self.root, job_dir, {'mode': 'full', 'resume': True}, lambda event: None)
         self.assertEqual(result['files'], resumed['files'])
 
@@ -95,16 +98,16 @@ class WebAppTests(unittest.TestCase):
         job_dir = self.root / 'analysis' / 'web_jobs' / ('b' * 32)
         job_dir.mkdir(parents=True)
         (job_dir / 'input.json').write_text(json.dumps(sample_chat()), encoding='utf-8')
-        run_dir = job_dir / 'output' / '临时文件' / '测试对象' / 'runs' / '20261017-000001'
-        run_dir.mkdir(parents=True)
         config = SimpleNamespace(api_key='test-only')
-        artifacts = workflow.build_artifacts(job_dir / 'input.json', job_dir / 'output')
-        skill = workflow.load_skill_prompt(Path(workflow.__file__).parent / 'SKILL.md')
+        artifacts = analysis_artifacts.build_artifacts(job_dir / 'input.json', job_dir / 'output')
+        run_dir = artifacts['runs_dir'] / '20261017-000001'
+        run_dir.mkdir(parents=True)
+        skill = report_generation.load_skill_prompt(Path(workflow.__file__).parent / 'SKILL.md')
         (run_dir / 'run_metadata.json').write_text(json.dumps({
             'chunk_size': 660, 'chunk_max_bytes': 12000, 'chunk_max_prompt_bytes': 18000,
             **run_identity(artifacts, skill, config),
         }), encoding='utf-8')
-        with patch('web_worker.load_llm_config', return_value=config), patch('run_workflow.run_single_workflow_with_auto_shrink', side_effect=RuntimeError('test-stop')) as run:
+        with patch('web_worker.load_llm_config', return_value=config), patch('chunk_pipeline.run_single_workflow_with_auto_shrink', side_effect=RuntimeError('test-stop')) as run:
             with self.assertRaisesRegex(RuntimeError, 'test-stop'):
                 run_job(self.root, job_dir, {'mode': 'full', 'resume': True}, lambda event: None)
         self.assertEqual(run.call_args.kwargs['chunk_size'], 660)
@@ -120,11 +123,11 @@ class WebAppTests(unittest.TestCase):
         responses = [chunk, 'relation <!-- END_FINAL_REPORT -->', 'persona <!-- END_PERSONA_REPORT -->']
         config = SimpleNamespace(api_base='https://test.invalid', api_key='test-only', model='test-model')
         with patch('web_worker.load_llm_config', return_value=config):
-            with patch('run_workflow.call_llm', side_effect=responses):
+            with patch('llm_client.call_llm', side_effect=responses):
                 run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
             data['messages'][0]['content'] = '改变消息'
             source.write_text(json.dumps(data), encoding='utf-8')
-            with patch('run_workflow.call_llm', side_effect=responses) as llm:
+            with patch('llm_client.call_llm', side_effect=responses) as llm:
                 run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
                 self.assertEqual(llm.call_count, 3)
 
@@ -135,14 +138,14 @@ class WebAppTests(unittest.TestCase):
         chunk = json.dumps({key: [] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
         responses = [chunk, 'relation <!-- END_FINAL_REPORT -->', 'persona <!-- END_PERSONA_REPORT -->']
         config = SimpleNamespace(api_base='https://test.invalid', api_key='test-only', model='test-model')
-        original_loader = workflow.load_skill_prompt
+        original_loader = report_generation.load_skill_prompt
         def changed_prompt(path):
             return original_loader(path) + (' changed' if path.name == 'PERSONA_SKILL.md' else '')
         with patch('web_worker.load_llm_config', return_value=config):
-            with patch('run_workflow.call_llm', side_effect=responses):
+            with patch('llm_client.call_llm', side_effect=responses):
                 run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
-            with patch('run_workflow.load_skill_prompt', side_effect=changed_prompt), \
-                 patch('run_workflow.call_llm', return_value='updated <!-- END_PERSONA_REPORT -->') as llm:
+            with patch('report_generation.load_skill_prompt', side_effect=changed_prompt), \
+                 patch('llm_client.call_llm', return_value='updated <!-- END_PERSONA_REPORT -->') as llm:
                 run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
                 self.assertEqual(llm.call_count, 1)
 

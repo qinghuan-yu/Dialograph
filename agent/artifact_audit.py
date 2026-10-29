@@ -5,6 +5,7 @@ import json
 from dataclasses import dataclass, field
 from pathlib import Path
 from evidence_validation import validate_evidence, FIELDS, SUMMARY_LIMIT
+from evidence_grounding import validate_grounded_ledger, GROUNDING_VERSION, LEDGER_VERSION
 
 
 FINAL_MARKER = "<!-- END_FINAL_REPORT -->"
@@ -61,7 +62,7 @@ def audit_report(path: Path, marker: str, label: str, result: AuditResult) -> No
         result.add_error(f"{label}缺少完成标记: {marker}")
 
 
-def audit_evidence_ledger(path: Path, result: AuditResult) -> int | None:
+def audit_evidence_ledger(path: Path, result: AuditResult, expected_messages=None) -> int | None:
     if not require_file(result, "结构化证据总表", path):
         return None
     try:
@@ -102,6 +103,22 @@ def audit_evidence_ledger(path: Path, result: AuditResult) -> int | None:
             missing_keys.append({"chunk_index": doc.get("chunk_index"), "missing": absent})
     if missing_keys:
         result.add_error(f"结构化证据分块缺少字段: {missing_keys[:5]}")
+
+    if ledger.get('schema_version') == LEDGER_VERSION or 'grounding_version' in ledger:
+        try:
+            if ledger.get('schema_version') != LEDGER_VERSION or ledger.get('grounding_version') != GROUNDING_VERSION:
+                raise ValueError('不支持的原文绑定版本。')
+            counts = validate_grounded_ledger(ledger, expected_messages)
+            result.stats['grounding'] = counts
+            if counts.get('unmatched', 0) or counts.get('ambiguous', 0):
+                result.add_warning(f"原文未匹配 {counts.get('unmatched', 0)} 条；多处候选 {counts.get('ambiguous', 0)} 条；已隔离，不作为报告证据。")
+        except (ValueError, KeyError, TypeError) as exc:
+            result.add_error(f'原文绑定审计失败: {exc}')
+    else:
+        if expected_messages is not None:
+            result.add_error('当前运行不能使用缺少原文绑定的旧证据账本，请重新运行。')
+        else:
+            result.add_warning('旧证据账本未核验原文出处，请重新运行以生成来源绑定。')
 
     declared_count = ledger.get("chunk_count")
     if isinstance(declared_count, int) and declared_count != len(documents):
@@ -152,7 +169,7 @@ def audit_artifacts(artifacts: dict, require_persona: bool = False) -> AuditResu
         result,
         artifacts.get("message_count"),
     )
-    evidence_count = audit_evidence_ledger(Path(artifacts["evidence_ledger_file"]), result)
+    evidence_count = audit_evidence_ledger(Path(artifacts["evidence_ledger_file"]), result, artifacts.get('messages'))
     if manifest_count is not None and evidence_count is not None and manifest_count != evidence_count:
         result.add_error(f"分块覆盖清单数量 {manifest_count} != 结构化证据数量 {evidence_count}")
 

@@ -14,8 +14,11 @@
           <div class="section-heading"><h2 id="input-title"><span class="step-number">01</span>选择对话</h2><button class="text-button" id="refresh-files" type="button">刷新列表</button></div>
           <form id="analysis-form">
             <label for="conversation">本地对话文件</label>
-            <div class="source-row"><select id="conversation" required disabled><option value="">正在读取本地文件…</option></select><button class="outline-button" id="import-button" type="button">导入 JSON</button><input id="file-input" type="file" accept=".json,application/json" hidden></div>
-            <p class="field-hint" id="file-hint">读取 talks 文件夹，或导入 WeFlow 原始导出的 JSON。</p>
+            <div class="source-row"><select id="conversation" required disabled><option value="">正在读取本地文件…</option></select><button class="outline-button" id="import-button" type="button">导入对话</button><input id="file-input" type="file" accept=".json,.md,application/json,text/markdown" hidden></div>
+            <p class="field-hint" id="file-hint">支持 WeFlow JSON、统一协议 JSON 和 Alpha Markdown 私聊导出。</p>
+            <p class="field-hint">默认在本机隐藏双方昵称与账号、电话、邮箱、证件、银行卡号和链接，再分析或发送给模型。</p>
+            <label for="redaction-terms">其他需要隐藏的内容（选填，每行一个）<textarea id="redaction-terms" rows="3" maxlength="100000" placeholder="例如：第三人的姓名、住址或单位"></textarea></label>
+            <p class="field-hint">原始文件仅保留在本机。自动规则无法识别所有身份线索，请补充需要隐藏的内容。</p>
             <fieldset><legend>分析方式</legend><div class="mode-options">
               <label class="mode-option"><input type="radio" name="mode" value="preprocess" checked><span><strong>仅预处理</strong><small>解析、统计与诊断 · 不调用模型</small></span></label>
               <label class="mode-option"><input type="radio" name="mode" value="full"><span><strong>完整分析</strong><small>逐块提取证据 · 关系报告与人物侧写</small></span></label>

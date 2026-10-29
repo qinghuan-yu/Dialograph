@@ -19,6 +19,9 @@ __pycache__/
 talks/
 analysis/
 LONG_TERM_OPTIMIZATION_PLAN.md
+docs/ARCHITECTURE_EXECUTION.md
+privacy_terms.local.txt
+privacy_terms.local.json
 
 # CodeGraph local index
 .codegraph/
@@ -28,3 +31,6 @@ LONG_TERM_OPTIMIZATION_PLAN.md
 Thumbs.db
 .idea/
 .vscode/
+
+# Local coursework materials
+/作业内容（不纳入提交）/

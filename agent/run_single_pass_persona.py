@@ -10,14 +10,11 @@ sys.path.insert(0, str(Path(__file__).parent))
 from analyze import extract_conversation_segments, extract_text_samples  # noqa: E402
 from config import load_llm_config  # noqa: E402
 from report_output import write_report  # noqa: E402
+from privacy_redaction import redact_artifact_call
 from run_single_pass_analysis import compact_samples, compact_segments  # noqa: E402
-from run_workflow import (  # noqa: E402
-    build_artifacts,
-    call_llm_with_retry,
-    load_skill_prompt,
-    should_retry_with_smaller_prompt,
-)
-
+from llm_client import call_llm_with_retry, should_retry_with_smaller_prompt
+from analysis_artifacts import build_artifacts, select_chat_files
+from report_generation import load_skill_prompt
 
 def build_single_pass_persona_prompt(
     name: str,
@@ -106,6 +103,7 @@ def compact_relation_report(report: str, max_chars: int = 12000) -> str:
     )
 
 
+@redact_artifact_call(position=2)
 def generate_persona_with_fallback(llm_config, persona_skill_prompt: str, artifacts: dict, relation_report: str) -> str:
     primary_prompt = build_single_pass_persona_prompt(
         artifacts["name"],
@@ -166,7 +164,7 @@ def main() -> int:
         print("LLM_API_KEY 未设置，无法执行单次人物建模。")
         return 1
 
-    talks = sorted((workspace / "talks").glob("*.json"))
+    talks = select_chat_files(workspace / "talks", [], None)
     target_file = None
     for talk in talks:
         if target in talk.stem:

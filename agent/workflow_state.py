@@ -11,10 +11,11 @@ LIMIT_KEYS = ('chunk_size', 'chunk_max_bytes', 'chunk_max_prompt_bytes')
 
 def run_identity(artifacts, skill_prompt, config):
     source = artifacts['chat_file'].read_bytes()
-    parsed = json.dumps({'messages': artifacts['messages'], 'session': artifacts.get('session', {})},
+    parsed = json.dumps({'messages': artifacts['messages'], 'session': artifacts.get('session', {}),
+                         'redaction': artifacts.get('redaction', {})},
                         ensure_ascii=False, sort_keys=True).encode('utf-8')
     hasher = hashlib.sha256(b'dialograph-cache-v2\0')
-    for name in ('run_workflow.py', 'analyze.py', 'conversation_input.py', 'evidence_validation.py', 'workflow_state.py', 'run_promotion.py'):
+    for name in ('run_workflow.py', 'chunk_pipeline.py', 'llm_client.py', 'prompt_budget.py', 'analysis_service.py', 'analysis_artifacts.py', 'report_generation.py', 'report_output.py', 'artifact_audit.py', 'analyze.py', 'conversation_input.py', 'conversation_formats.py', 'evidence_validation.py', 'evidence_grounding.py', 'privacy_redaction.py', 'workflow_state.py', 'run_promotion.py'):
         hasher.update((Path(__file__).parent / name).read_bytes())
     hasher.update(skill_prompt.encode('utf-8'))
     hasher.update(str(getattr(config, 'model', '')).encode('utf-8'))

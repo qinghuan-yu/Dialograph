@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent'))
-import run_workflow as workflow
+import chunk_pipeline as workflow
 
 
 class PromotionTests(unittest.TestCase):

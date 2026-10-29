@@ -19,14 +19,15 @@ from urllib.parse import urlparse, parse_qs, quote
 from analyze import parse_chat_messages
 from config import load_llm_config
 from web_worker import OUTPUTS
-from conversation_input import validate_weflow
+from conversation_formats import conversation_files, normalize_conversation, read_conversation
+from privacy_redaction import validate_redaction_terms
 
 MAX_UPLOAD = 50 * 1024 * 1024
 ACTIVE = {'queued', 'running'}
 
 
 def validate_chat(data):
-    validate_weflow(data)
+    data = normalize_conversation(data)
     if not parse_chat_messages(data['messages'])['messages']:
         raise ValueError('没有可分析的有效消息。')
     return data
@@ -55,7 +56,7 @@ class WebService:
 
     def conversations(self):
         rows = []
-        for path in sorted((self.root / 'talks').glob('*.json')):
+        for path in conversation_files(self.root / 'talks'):
             if path.is_file() and path.resolve().parent == (self.root / 'talks').resolve():
                 rows.append({'id': hashlib.sha256(path.name.encode('utf-8')).hexdigest(),
                              'name': path.name, 'bytes': path.stat().st_size})
@@ -70,12 +71,12 @@ class WebService:
     def import_chat(self, filename, raw):
         if len(raw) > MAX_UPLOAD:
             raise ValueError('文件超过 50 MB，请先拆分导出。')
-        data = validate_chat(json.loads(raw.decode('utf-8-sig')))
+        validate_chat(read_conversation(raw, filename))
         name = re.sub(r'[^\w\-\u4e00-\u9fff]', '_', Path(filename.replace('\\', '/')).stem)[:60] or 'conversation'
-        filename = f'{name}_{uuid.uuid4().hex[:10]}.json'
+        filename = f'{name}_{uuid.uuid4().hex[:10]}{Path(filename).suffix.lower()}'
         talks = self.root / 'talks'
         talks.mkdir(exist_ok=True)
-        (talks / filename).write_text(json.dumps(data, ensure_ascii=False), encoding='utf-8')
+        (talks / filename).write_bytes(raw)
         return next(row for row in self.conversations() if row['name'] == filename)
 
     def save(self, state):
@@ -106,6 +107,7 @@ class WebService:
                 options = json.loads((job_dir / 'request.json').read_text(encoding='utf-8'))
                 options['resume'] = True
             else:
+                redaction_terms = validate_redaction_terms(request.get('redaction_terms', []))
                 mode = request.get('mode')
                 if not isinstance(mode, str) or mode not in {'preprocess', 'full'}:
                     raise ValueError('请选择预处理或完整分析。')
@@ -121,12 +123,14 @@ class WebService:
                 if source.stat().st_size > MAX_UPLOAD:
                     raise ValueError('文件超过 50 MB，请先拆分导出。')
                 raw = source.read_bytes()
-                validate_chat(json.loads(raw.decode('utf-8-sig')))
+                validate_chat(read_conversation(raw, source.name))
                 job_id = uuid.uuid4().hex
                 job_dir = self.jobs_dir / job_id
                 job_dir.mkdir()
-                (job_dir / 'input.json').write_text(raw.decode('utf-8-sig'), encoding='utf-8')
-                options = {'mode': mode, 'chunk_size': chunk_size, 'timeout': timeout}
+                input_name = 'input' + source.suffix.lower()
+                (job_dir / input_name).write_bytes(raw)
+                options = {'mode': mode, 'chunk_size': chunk_size, 'timeout': timeout, 'input_name': input_name,
+                           'redaction_terms': redaction_terms}
                 state = {'id': job_id, 'name': source.name, 'mode': mode, 'created': timestamp(), 'events': []}
             if options['mode'] == 'full' and not load_llm_config(self.root).api_key:
                 raise ValueError('未配置模型密钥。请填写项目根目录 .env，或先运行仅预处理。')
@@ -165,41 +169,56 @@ class WebService:
         threading.Thread(target=drain_errors, daemon=True).start()
         received_result = False
         received_error = False
-        for line in process.stdout:
-            try:
-                event = json.loads(line)
-            except ValueError:
-                continue
-            with self.lock:
-                if state['status'] == 'cancelled':
+        code = -1
+        try:
+            for line in process.stdout:
+                try:
+                    event = json.loads(line)
+                except ValueError:
                     continue
-                if event['type'] == 'result':
-                    received_result = True
-                    state.update(files=event['files'], stats=event['stats'], diagnostics=event['diagnostics'], warnings=event.get('warnings', []))
-                elif event['type'] == 'stats':
-                    state.update(stats=event['stats'], diagnostics=event['diagnostics'])
-                else:
-                    for field in ('stage', 'message', 'current', 'total', 'completed'):
-                        if field in event:
-                            state[field] = event[field]
-                    state['events'] = (state['events'] + [{'time': timestamp(), 'message': event.get('message', '')}])[-150:]
-                    if event['type'] == 'error':
-                        received_error = True
+                with self.lock:
+                    if state['status'] == 'cancelled':
+                        continue
+                    if event['type'] == 'result':
+                        received_result = True
+                        state.update(files=event['files'], stats=event['stats'], diagnostics=event['diagnostics'], warnings=event.get('warnings', []))
+                    elif event['type'] == 'stats':
+                        state.update(stats=event['stats'], diagnostics=event['diagnostics'])
+                    else:
+                        for field in ('stage', 'message', 'current', 'total', 'completed'):
+                            if field in event:
+                                state[field] = event[field]
+                        state['events'] = (state['events'] + [{'time': timestamp(), 'message': event.get('message', '')}])[-150:]
+                        if event['type'] == 'error':
+                            received_error = True
+                            state['status'] = 'failed'
+                    self.save(state)
+            code = process.wait()
+        except Exception:
+            received_error = True
+            with self.lock:
+                if state['status'] != 'cancelled':
+                    state.update(status='failed', message='分析进程事件读取失败，可继续任务。')
+        finally:
+            try:
+                if process.poll() is None:
+                    process.terminate()
+                process.wait(timeout=5)
+            except (OSError, subprocess.TimeoutExpired):
+                process.kill()
+                process.wait()
+            process.stdout.close()
+            with self.lock:
+                self.processes.pop(job_id, None)
+                if state['status'] != 'cancelled':
+                    if code == 0 and received_result and not received_error:
+                        state['status'] = 'completed'
+                    else:
                         state['status'] = 'failed'
+                        if not received_error:
+                            state['message'] = '分析进程未能完整结束，可继续任务。'
+                state['finished'] = timestamp()
                 self.save(state)
-        code = process.wait()
-        process.stdout.close()
-        with self.lock:
-            self.processes.pop(job_id, None)
-            if state['status'] != 'cancelled':
-                if code == 0 and received_result:
-                    state['status'] = 'completed'
-                else:
-                    state['status'] = 'failed'
-                    if not received_error:
-                        state['message'] = '分析进程未能完整结束，可继续任务。'
-            state['finished'] = timestamp()
-            self.save(state)
 
     def cancel(self, job_id):
         with self.lock:

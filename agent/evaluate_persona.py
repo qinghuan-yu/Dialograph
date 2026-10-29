@@ -15,7 +15,7 @@ from pathlib import Path
 
 from config import load_llm_config
 from persona_metrics import bootstrap, planned_rows, score, validate_extraction
-from run_workflow import call_llm_with_retry
+from llm_client import call_llm_with_retry
 
 ROOT = Path(__file__).resolve().parents[1]
 ONTOLOGY = {
