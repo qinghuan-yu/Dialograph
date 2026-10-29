@@ -1,6 +1,7 @@
 "use strict";
 const $ = selector => document.querySelector(selector);
-const state = { token: "", config: null, jobs: [], selected: null, output: null, outputRequest: 0, submitting: false };
+const state = { token: "", config: null, jobs: [], selected: null, output: null, outputRequest: 0, submitting: false,
+  evidence: { job: null, request: 0, revision: null } };
 const labels = { queued: "等待启动", running: "正在运行", completed: "已完成", failed: "失败", cancelled: "已停止", interrupted: "已中断" };
 const stageOrder = ["prepare", "chunks", "merge", "analysis", "persona", "audit"];
 const active = job => job && ["queued", "running"].includes(job.status);
@@ -83,6 +84,9 @@ function renderStats(job) {
 }
 function renderJob(job) {
   if (!job) return;
+  const searchable = job.status === "completed" && job.mode === "full" && !!job.files?.evidence;
+  if (state.evidence.job !== job.id || !searchable) resetEvidence(searchable ? job.id : null);
+  $("#evidence-panel").hidden = !searchable;
   $("#job-status").textContent = labels[job.status]; $("#job-name").textContent = job.name;
   $("#live-message").textContent = job.message || "正在启动…";
   $("#live-message").classList.toggle("error-text", job.status === "failed");
@@ -119,10 +123,101 @@ function renderJob(job) {
 function selectJob(id) {
   if (state.selected !== id) {
     state.selected = id; state.output = null; state.outputRequest += 1;
+    resetEvidence(id);
     $("#report-content").replaceChildren(); showError("#report-error", null);
     try { localStorage.setItem("dialograph-job", id); } catch (_) { /* 私密模式可不保存选择。 */ }
   }
   renderHistory(); renderJob(state.jobs.find(job => job.id === id));
+}
+function resetEvidence(jobId) {
+  state.evidence = { job: jobId, request: state.evidence.request + 1, revision: null };
+  $("#evidence-results").replaceChildren(); $("#evidence-query").value = "";
+  $("#evidence-status").textContent = "输入关键词，查询当前任务的脱敏证据。首次查询需在本机建立索引。";
+  $("#evidence-results").setAttribute("aria-busy", "false");
+  showError("#evidence-error", null);
+}
+function evidenceRequestCurrent(job, request) {
+  return state.selected === job && state.evidence.job === job && state.evidence.request === request;
+}
+async function searchEvidence() {
+  const job = state.selected, query = $("#evidence-query").value.trim();
+  const request = ++state.evidence.request;
+  state.evidence.revision = null;
+  $("#evidence-results").replaceChildren(); showError("#evidence-error", null);
+  $("#evidence-results").setAttribute("aria-busy", "false");
+  if (!query) { $("#evidence-status").textContent = "请输入查询关键词。"; return; }
+  $("#evidence-status").textContent = "正在本机检索…";
+  $("#evidence-results").setAttribute("aria-busy", "true");
+  try {
+    const data = await post("/api/evidence/search", { id: job, query });
+    if (!evidenceRequestCurrent(job, request)) return;
+    if (data.job_id !== job) throw new Error("任务结果不一致，请重新查询。");
+    state.evidence.revision = data.ledger_revision;
+    renderEvidenceResults(data);
+    const count = Object.values(data.matches).reduce((sum, rows) => sum + rows.length, 0);
+    $("#evidence-status").textContent = `“${query}” · 共 ${count} 条匹配，每类最多展示 5 条。`;
+  } catch (error) {
+    if (!evidenceRequestCurrent(job, request)) return;
+    $("#evidence-status").textContent = "查询未完成，可重新提交。"; showError("#evidence-error", error);
+  } finally {
+    if (evidenceRequestCurrent(job, request)) $("#evidence-results").setAttribute("aria-busy", "false");
+  }
+}
+function renderEvidenceResults(data) {
+  const container = $("#evidence-results"); container.replaceChildren();
+  const categories = { events: "事件", relation_signals: "关系信号", persona_signals: "人物信号", counter_evidence: "反证", uncertainties: "存疑" };
+  for (const [role, label] of [["support", "支持候选"], ["counter", "反证"], ["mixed", "混合信号"], ["uncertainty", "存疑"]]) {
+    const rows = data.matches[role] || [], group = element("section", undefined, "evidence-group");
+    group.append(element("h4", `${label} · ${rows.length}`));
+    if (!rows.length) group.append(element("p", `此关键词未匹配到${label}，不代表整段对话中不存在。`, "field-hint"));
+    for (const row of rows) {
+      const card = element("article", undefined, "evidence-row"), payload = row.payload || {};
+      card.append(element("p", [payload.summary, payload.signal, payload.trait, payload.model, payload.against, payload.question].filter(Boolean).join(" · "), "evidence-summary"));
+      if (payload.reason) card.append(element("p", payload.reason));
+      if (role !== "uncertainty" && row.quote) card.append(element("blockquote", row.quote));
+      card.append(element("p", `${categories[row.category] || row.category} · ${row.evidence_id}`, "evidence-meta"));
+      if (row.confidence !== undefined && row.confidence !== null) card.append(element("p", `原抽取置信度：${({ high: "高", medium: "中", low: "低" })[row.confidence] || row.confidence}（不代表结论置信度）`, "field-hint"));
+      if (row.grounding_status === "matched" && role !== "uncertainty") {
+        const button = element("button", "回查原文", "text-button"), source = element("div", undefined, "evidence-source");
+        button.type = "button"; button.setAttribute("aria-expanded", "false"); source.hidden = true;
+        button.addEventListener("click", async () => {
+          source.hidden = !source.hidden; button.setAttribute("aria-expanded", String(!source.hidden));
+          if (!source.hidden && !source.dataset.loaded) {
+            button.disabled = true;
+            try { await loadEvidenceSource(row, source); } finally { button.disabled = false; }
+          }
+        });
+        card.append(button, source);
+      } else card.append(element("p", "存疑项没有事实级原文锚点，不能作为支持证据。", "field-hint"));
+      group.append(card);
+    }
+    container.append(group);
+  }
+}
+function renderEvidenceSource(item, container) {
+  container.replaceChildren();
+  for (const occurrence of item.occurrences || []) {
+    for (const ref of occurrence.source_refs || []) {
+      const source = element("div"), text = element("p", undefined, "source-message");
+      source.append(element("p", `分块 ${occurrence.chunk_index} · 原始第 ${ref.original_index + 1} 条 · ${ref.sender === "me" ? "我" : ref.sender === "other" ? "对方" : ref.sender} · ${ref.time}`, "evidence-meta"));
+      // 后端位置以 Unicode 字符计数，避免表情符号导致高亮错位。
+      const chars = Array.from(ref.content);
+      text.append(document.createTextNode(chars.slice(0, ref.start).join("")), element("mark", chars.slice(ref.start, ref.end).join("")), document.createTextNode(chars.slice(ref.end).join("")));
+      source.append(text); container.append(source);
+    }
+  }
+}
+async function loadEvidenceSource(row, container) {
+  const { job, request, revision } = state.evidence;
+  container.textContent = "正在回查脱敏原文…";
+  try {
+    const data = await post("/api/evidence/show", { id: job, evidence_id: row.evidence_id, revision });
+    if (!evidenceRequestCurrent(job, request) || revision !== state.evidence.revision || !container.isConnected) return;
+    if (data.job_id !== job || data.ledger_revision !== revision) throw new Error("证据版本已改变，请重新检索。");
+    renderEvidenceSource(data.evidence, container); container.dataset.loaded = "true";
+  } catch (error) {
+    if (evidenceRequestCurrent(job, request) && container.isConnected) container.textContent = error.message || "回查失败，请重试。";
+  }
 }
 // 仅渲染安全文本，不执行报告中的 HTML 或加载外部资源。
 function inlineText(node, text) {
@@ -213,10 +308,12 @@ $("#cancel-button").addEventListener("click", async () => {
 });
 $("#retry-button").addEventListener("click", async () => {
   $("#retry-button").disabled = true;
+  resetEvidence(null); $("#evidence-panel").hidden = true;
   try { await post("/api/jobs", { retry_of: state.selected }); state.output = null; await refreshJobs(); }
   catch (error) { showError("#form-error", error); }
-  finally { $("#retry-button").disabled = false; }
+  finally { $("#retry-button").disabled = false; renderJob(state.jobs.find(job => job.id === state.selected)); }
 });
+$("#evidence-form").addEventListener("submit", event => { event.preventDefault(); searchEvidence(); });
 $("#download-button").addEventListener("click", async () => {
   try {
     const output = await api(`/api/outputs/${state.selected}/${state.output}`);

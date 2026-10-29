@@ -21,6 +21,7 @@ from config import load_llm_config
 from web_worker import OUTPUTS
 from conversation_formats import conversation_files, normalize_conversation, read_conversation
 from privacy_redaction import validate_redaction_terms
+from web_evidence import TaskEvidenceIndex
 
 MAX_UPLOAD = 50 * 1024 * 1024
 ACTIVE = {'queued', 'running'}
@@ -45,6 +46,7 @@ class WebService:
         self.token = secrets.token_urlsafe(32)
         self.jobs, self.processes = {}, {}
         self.lock = threading.RLock()
+        self.evidence_index = TaskEvidenceIndex()
         for path in self.jobs_dir.glob('*/state.json'):
             try:
                 state = json.loads(path.read_text(encoding='utf-8'))
@@ -248,6 +250,41 @@ class WebService:
             raise ValueError('无效的结果路径。')
         return path, item
 
+    def _evidence_context(self, job_id):
+        if not isinstance(job_id, str) or not re.fullmatch(r'[0-9a-f]{32}', job_id):
+            raise ValueError('无效的任务编号。')
+        with self.lock:
+            state = self.snapshot(job_id)
+            if state.get('status') != 'completed' or state.get('mode') != 'full':
+                raise ValueError('请先完成当前任务的完整分析，再检索证据。')
+            ledger, _ = self.output_path(job_id, 'evidence')
+            folder = (self.jobs_dir / job_id).resolve()
+            options = json.loads((folder / 'request.json').read_text(encoding='utf-8'))
+            if not isinstance(options, dict) or options.get('input_name', 'input.json') not in ('input.json', 'input.md'):
+                raise ValueError('任务输入记录无效。')
+            source = (folder / options.get('input_name', 'input.json')).resolve()
+            cache = (folder / 'retrieval').resolve()
+            if source.parent != folder or not source.is_file() or not cache.is_relative_to(folder):
+                raise ValueError('任务输入或检索目录无效。')
+            terms = validate_redaction_terms(options.get('redaction_terms', []))
+            return ledger, cache, source, terms
+
+    def _retrieve_evidence(self, job_id, **options):
+        context = self._evidence_context(job_id)
+        result = self.evidence_index.retrieve(*context, **options)
+        # 查询期间任务、输入或补充词改变时，不向页面交付旧结果。
+        current = self._evidence_context(job_id)
+        ledger, _, source, terms = current
+        if current != context or self.evidence_index.revision(ledger, source, terms) != result['ledger_revision']:
+            raise ValueError('任务证据或脱敏设置已改变，请重新检索。')
+        return {**result, 'job_id': job_id}
+
+    def search_evidence(self, job_id, query, limit=5):
+        return self._retrieve_evidence(job_id, query=query, limit=limit)
+
+    def show_evidence(self, job_id, evidence_id, revision):
+        return self._retrieve_evidence(job_id, evidence_id=evidence_id, expected_revision=revision)
+
 
 def make_handler(service, port):
     allowed_hosts = {f'127.0.0.1:{port}', f'localhost:{port}'}
@@ -331,6 +368,14 @@ def make_handler(service, port):
                     return self.send(202, service.start(data))
                 if path == '/api/cancel':
                     return self.send(200, service.cancel(data.get('id')))
+                if path == '/api/evidence/search':
+                    if set(data) - {'id', 'query', 'limit'}:
+                        raise ValueError('检索请求包含不支持的参数。')
+                    return self.send(200, service.search_evidence(data.get('id'), data.get('query'), data.get('limit', 5)))
+                if path == '/api/evidence/show':
+                    if set(data) - {'id', 'evidence_id', 'revision'}:
+                        raise ValueError('回查请求包含不支持的参数。')
+                    return self.send(200, service.show_evidence(data.get('id'), data.get('evidence_id'), data.get('revision')))
                 self.send(404, {'error': '接口不存在。'})
             except (ValueError, OSError) as exc:
                 self.send(400, {'error': str(exc) if isinstance(exc, ValueError) else '无法保存本地文件。'})

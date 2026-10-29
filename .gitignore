@@ -22,6 +22,10 @@ LONG_TERM_OPTIMIZATION_PLAN.md
 docs/ARCHITECTURE_EXECUTION.md
 privacy_terms.local.txt
 privacy_terms.local.json
+*.sqlite3
+*.sqlite3-journal
+*.sqlite3-wal
+*.sqlite3-shm
 
 # CodeGraph local index
 .codegraph/

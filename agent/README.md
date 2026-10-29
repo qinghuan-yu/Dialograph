@@ -28,6 +28,8 @@
 - `workflow_state.py`：续跑输入/流程指纹和保存参数的校验。
 - `evidence_validation.py`：证据字段/枚举校验及跨块摘要取样。
 - `evidence_grounding.py`：输入快照和消息编号、逐字引文绑定、歧义隔离、证据编号及独立重算校验，详见 [原文绑定说明](../docs/EVIDENCE_GROUNDING.md)。
+- `evidence_store.py`：校验 v2 脱敏账本，按快照隔离的 SQLite/FTS5 中文查询和来源回查，详见 [证据检索](../docs/EVIDENCE_RETRIEVAL.md)。
+- `web_evidence.py`：为网页已完成任务按需建立派生索引，核对实际输入快照及脱敏规则，并以版本约束查询和原文回查。
 - `privacy_redaction.py`：默认身份/格式化敏感信息替换、补充词、模型请求与返回值脱敏，以及任务上下文隔离，详见 [脱敏说明](../docs/PRIVACY_REDACTION.md)。
 
 两份 single-pass 入口只写 `analysis/预览/`，人物预览读取关系预览；文件头和控制台均标明预览。正式报告仍由完整工作流生成。

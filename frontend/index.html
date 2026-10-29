@@ -50,6 +50,17 @@
           <p id="results-empty" class="empty-note">完成预处理后可查看统计；完整分析结束后可阅读报告、检查证据并下载结果。</p>
           <div id="stats-panel" hidden><dl id="metrics" class="metrics"></dl><div class="trend-heading"><h3>每月消息量</h3><span>我 / 对方 · 最近 12 个有记录月份</span></div><div id="monthly-chart" class="monthly-chart" aria-label="每月消息量"></div><p id="diagnostic-summary" class="field-hint"></p></div>
           <div id="report-panel" hidden><div class="report-navigation"><div id="report-tabs" class="report-tabs" role="group" aria-label="选择输出文件"></div><button type="button" class="text-button" id="download-button">下载当前文件 ↗</button></div><p id="report-error" class="error-text" role="alert" hidden></p><article id="report-content" class="report-content" aria-live="polite"></article></div>
+          <section id="evidence-panel" class="evidence-panel" aria-labelledby="evidence-title" hidden>
+            <h3 id="evidence-title">检索与回查证据</h3>
+            <p class="field-hint">只检索当前任务的脱敏证据，在本机完成，不调用模型。关键词匹配不代表支持某个关系结论，请结合反证与存疑阅读。</p>
+            <form id="evidence-form" role="search">
+              <label for="evidence-query">查询关键词</label>
+              <div class="evidence-query-row"><input id="evidence-query" type="search" maxlength="200" required placeholder="例如：修复意愿、压力撤退" aria-describedby="evidence-status"><button type="submit" class="outline-button">查询证据 ↗</button></div>
+            </form>
+            <p id="evidence-status" class="field-hint" role="status" aria-live="polite"></p>
+            <p id="evidence-error" class="error-text" role="alert" hidden></p>
+            <div id="evidence-results" aria-busy="false"></div>
+          </section>
         </section>
       </div>
       <aside class="sidebar" aria-label="模型与任务">

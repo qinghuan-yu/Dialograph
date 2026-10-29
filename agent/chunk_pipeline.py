@@ -433,11 +433,14 @@ def write_evidence_ledger(
     ledger_file: Path,
     summary_file: Path,
     messages: list[dict],
+    redaction: dict | None = None,
 ) -> str:
     ledger = {"schema_version": LEDGER_VERSION, "grounding_version": GROUNDING_VERSION,
               "chunk_count": len(evidence_docs), "documents": evidence_docs,
               "source_id": messages[0]['source_id'], "source_messages": messages,
               "grounding_issues": grounding_issues(evidence_docs)}
+    if redaction is not None:
+        ledger['redaction'] = {**redaction, 'source_id': ledger['source_id']}
     ledger_file.write_text(
         json.dumps(ledger, ensure_ascii=False, indent=2),
         encoding="utf-8",
@@ -806,6 +809,7 @@ def run_single_workflow(
         run_paths["evidence_ledger_file"],
         run_paths["evidence_summary_file"],
         artifacts["messages"],
+        redaction=artifacts['redaction'],
     )
 
     if resume_run_id and run_paths["phase_summary_file"].exists():
