@@ -32,6 +32,7 @@ def call_llm(
     user_prompt: str,
     timeout: int,
     max_tokens: int = 2600,
+    thinking: str | None = None,
 ) -> str:
     endpoint = api_base.rstrip("/") + "/chat/completions"
     payload = {
@@ -44,6 +45,8 @@ def call_llm(
             {"role": "user", "content": user_prompt},
         ],
     }
+    if thinking is not None:
+        payload['thinking'] = {'type': thinking}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = request.Request(
         endpoint,
@@ -141,6 +144,7 @@ def call_llm_with_retry_result(
                 user_prompt=current_redactor().redact(user_prompt),
                 timeout=timeout,
                 max_tokens=current_max_tokens,
+                **({'thinking': config.thinking} if getattr(config, 'thinking', None) is not None else {}),
             )
             return LLMRetryResult(content=current_redactor().response(content), max_tokens_used=current_max_tokens)
         except Exception as exc:  # noqa: BLE001

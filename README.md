@@ -60,6 +60,8 @@ LLM_MODEL=deepseek-v4-flash
 
 现成预设模板在 `根目录下的.env.example`。
 
+官方 DeepSeek 服务的 `deepseek-v4-flash` / `deepseek-v4-pro` 默认关闭思考模式，使紧凑证据抽取的输出预算用于正文。可用 `LLM_THINKING=enabled`、`disabled` 或 `default` 显式设置；`default` 不发送思考参数，由服务决定。其他模型和服务默认不发送该参数。开启思考可能在现有输出预算内截断；模式变化会使旧报告和缓存不再匹配，须重新生成。
+
 ## 运行方式
 
 需要 Python 3.10+。证据检索还需要 Python 自带的 SQLite 支持 FTS5 `trigram`；缺少该功能时会明确报错，已验证环境见 [本地证据检索](docs/EVIDENCE_RETRIEVAL.md)。

@@ -22,11 +22,12 @@ def run_identity(artifacts, skill_prompt, config):
                          'redaction': artifacts.get('redaction', {})},
                         ensure_ascii=False, sort_keys=True).encode('utf-8')
     hasher = hashlib.sha256(b'dialograph-cache-v2\0')
-    for name in ('run_workflow.py', 'chunk_pipeline.py', 'chunking.py', 'chunk_evidence.py', 'summary_merge.py', 'analysis_types.py', 'llm_client.py', 'prompt_budget.py', 'analysis_service.py', 'analysis_artifacts.py', 'report_generation.py', 'report_output.py', 'artifact_audit.py', 'analyze.py', 'conversation_input.py', 'conversation_formats.py', 'evidence_validation.py', 'evidence_grounding.py', 'privacy_redaction.py', 'workflow_state.py', 'run_promotion.py'):
+    for name in ('run_workflow.py', 'chunk_pipeline.py', 'chunking.py', 'chunk_evidence.py', 'summary_merge.py', 'analysis_types.py', 'config.py', 'llm_client.py', 'prompt_budget.py', 'analysis_service.py', 'analysis_artifacts.py', 'report_generation.py', 'report_output.py', 'artifact_audit.py', 'analyze.py', 'conversation_input.py', 'conversation_formats.py', 'evidence_validation.py', 'evidence_grounding.py', 'privacy_redaction.py', 'workflow_state.py', 'run_promotion.py'):
         hasher.update((Path(__file__).parent / name).read_bytes())
     hasher.update(skill_prompt.encode('utf-8'))
     hasher.update(str(getattr(config, 'model', '')).encode('utf-8'))
     hasher.update(str(getattr(config, 'api_base', '')).encode('utf-8'))
+    hasher.update(b'\0thinking\0' + json.dumps(getattr(config, 'thinking', None)).encode('utf-8'))
     return {'input_sha256': hashlib.sha256(source + b'\0' + parsed).hexdigest(),
             'pipeline_sha256': hasher.hexdigest()}
 

@@ -5,6 +5,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from pathlib import Path
+from urllib.parse import urlsplit
 
 
 DEFAULT_LLM_API_BASE = "https://token-plan-sgp.xiaomimimo.com/v1"
@@ -17,6 +18,7 @@ class LLMConfig:
     api_key: str
     model: str
     source: str
+    thinking: str | None = None
 
 
 def load_env_file(env_path: Path) -> bool:
@@ -48,10 +50,20 @@ def load_llm_config(workspace: Path) -> LLMConfig:
     api_key = os.getenv("LLM_API_KEY", "")
     model = os.getenv("LLM_MODEL", DEFAULT_LLM_MODEL)
     source = str(env_path) if loaded else "environment/defaults"
+    thinking = os.getenv('LLM_THINKING')
+    if thinking is None:
+        # 已知官方 v4 默认思考会耗尽紧凑证据输出预算；其他服务沿用其默认值。
+        thinking = ('disabled' if urlsplit(api_base).hostname == 'api.deepseek.com'
+                    and model in {'deepseek-v4-flash', 'deepseek-v4-pro'} else None)
+    elif thinking not in {'enabled', 'disabled', 'default'}:
+        raise ValueError('LLM_THINKING 必须为 enabled、disabled 或 default。')
+    elif thinking == 'default':
+        thinking = None
 
     return LLMConfig(
         api_base=api_base,
         api_key=api_key,
         model=model,
         source=source,
+        thinking=thinking,
     )
