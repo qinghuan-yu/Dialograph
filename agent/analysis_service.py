@@ -5,9 +5,11 @@ from artifact_audit import audit_artifacts, has_marker, PERSONA_MARKER
 from workflow_state import run_identity, resume_metadata, LIMIT_KEYS, report_matches
 import chunk_pipeline as workflow
 from report_generation import generate_persona_report
+from chunking import ChunkSettings
+from analysis_types import AnalysisArtifacts
 
 
-def analyze_conversation(artifacts, skill_prompt, persona_skill_prompt, config, timeout,
+def analyze_conversation(artifacts: AnalysisArtifacts, skill_prompt, persona_skill_prompt, config, timeout,
                          *, force=False, force_persona=False, resume_run_id=None,
                          auto_resume=False, on_warning=None, **chunk_options):
     warnings = []
@@ -45,9 +47,10 @@ def analyze_conversation(artifacts, skill_prompt, persona_skill_prompt, config, 
                     or not has_marker(artifacts['persona_file'], PERSONA_MARKER)
                     or not report_matches(artifacts, persona_skill_prompt, config, persona=True))
     if need_analysis:
+        auto_shrink = chunk_options.pop('auto_shrink', True)
         result = workflow.run_single_workflow_with_auto_shrink(
             artifacts, skill_prompt, config, timeout=timeout,
-            resume_run_id=resume_run_id, **chunk_options)
+            resume_run_id=resume_run_id, settings=ChunkSettings(**chunk_options), auto_shrink=auto_shrink)
     else:
         result = {'name': artifacts['name'], 'status': 'success' if need_persona else 'skipped',
                   'analysis_file': str(artifacts['analysis_file']),

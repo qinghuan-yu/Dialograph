@@ -5,14 +5,12 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 
-from analyze import extract_conversation_segments, extract_text_samples  # noqa: E402
-from config import load_llm_config  # noqa: E402
-from report_output import write_report  # noqa: E402
+from preview_support import preview_materials, generate_preview
+from analysis_types import AnalysisArtifacts
+from config import load_llm_config
+from report_output import write_report
 from privacy_redaction import redact_artifact_call
-from run_single_pass_analysis import compact_samples, compact_segments  # noqa: E402
-from llm_client import call_llm_with_retry, should_retry_with_smaller_prompt
 from analysis_artifacts import build_artifacts, select_chat_files
 from report_generation import load_skill_prompt
 
@@ -104,53 +102,16 @@ def compact_relation_report(report: str, max_chars: int = 12000) -> str:
 
 
 @redact_artifact_call(position=2)
-def generate_persona_with_fallback(llm_config, persona_skill_prompt: str, artifacts: dict, relation_report: str) -> str:
-    primary_prompt = build_single_pass_persona_prompt(
-        artifacts["name"],
-        artifacts["stats_summary"],
-        compact_segments(
-            extract_conversation_segments(artifacts["messages"], n_segments=12),
-            max_messages_per_segment=16,
-        ),
-        compact_samples(extract_text_samples(artifacts["messages"], n_samples=60), max_count=60),
-        relation_report,
-    )
+def generate_persona_with_fallback(llm_config, persona_skill_prompt: str, artifacts: AnalysisArtifacts, relation_report: str) -> str:
+    def prompt(compact=False):
+        segments, samples = preview_materials(artifacts, compact=compact)
+        return build_single_pass_persona_prompt(artifacts['name'], artifacts['stats_summary'], segments, samples,
+            compact_relation_report(relation_report, max_chars=9000) if compact else relation_report)
 
+    primary_prompt = prompt()
     print(f"单次提示词大小: {len(primary_prompt.encode('utf-8'))} bytes")
     print("正在调用模型生成人物侧写...")
-    try:
-        return call_llm_with_retry(
-            llm_config,
-            persona_skill_prompt,
-            primary_prompt,
-            timeout=1800,
-            max_tokens=4200,
-            max_attempts=1,
-        )
-    except Exception as exc:  # noqa: BLE001
-        if not should_retry_with_smaller_prompt(exc):
-            raise
-
-        fallback_prompt = build_single_pass_persona_prompt(
-            artifacts["name"],
-            artifacts["stats_summary"],
-            compact_segments(
-                extract_conversation_segments(artifacts["messages"], n_segments=8),
-                max_messages_per_segment=12,
-            ),
-            compact_samples(extract_text_samples(artifacts["messages"], n_samples=30), max_count=30),
-            compact_relation_report(relation_report, max_chars=9000),
-        )
-        print(f"- 主请求失败，切换紧凑回退: {exc}")
-        print(f"- 回退提示词大小: {len(fallback_prompt.encode('utf-8'))} bytes")
-        return call_llm_with_retry(
-            llm_config,
-            persona_skill_prompt,
-            fallback_prompt,
-            timeout=1800,
-            max_tokens=3200,
-            max_attempts=2,
-        )
+    return generate_preview(llm_config, persona_skill_prompt, primary_prompt, lambda: prompt(compact=True))
 
 
 def main() -> int:

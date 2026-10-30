@@ -9,6 +9,7 @@ FIELDS = {
     'uncertainties': ('question', 'reason'),
 }
 SUMMARY_LIMIT = 60
+EXTRACTION_SCHEMA_VERSION = 'chat-evidence-v1'
 
 
 def validate_evidence(data: dict) -> None:

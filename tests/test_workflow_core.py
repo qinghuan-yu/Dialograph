@@ -16,6 +16,9 @@ import analyze  # noqa: E402
 import artifact_audit  # noqa: E402
 import output_paths  # noqa: E402
 import chunk_pipeline as run_workflow  # noqa: E402
+import chunk_evidence
+import chunking
+import summary_merge
 import report_generation
 import llm_client
 
@@ -104,7 +107,7 @@ class AnalyzeParsingTests(unittest.TestCase):
 
 class ChunkingTests(unittest.TestCase):
     def test_chunk_prompt_requires_compact_json_only_output(self) -> None:
-        prompt = run_workflow.build_chunk_prompt(
+        prompt = chunking.build_chunk_prompt(
             {"other_name": "Other"},
             1,
             1,
@@ -116,24 +119,24 @@ class ChunkingTests(unittest.TestCase):
         self.assertIn("events 3 条", prompt)
         self.assertIn("禁止使用“他/她/ta”代称", prompt)
         self.assertNotIn("```", prompt)
-        self.assertLessEqual(run_workflow.CHUNK_OUTPUT_TOKENS, 1200)
+        self.assertLessEqual(chunk_evidence.CHUNK_OUTPUT_TOKENS, 1200)
 
     def test_chunk_coverage_rejects_missing_tail(self) -> None:
         messages = [message(index) for index in range(1, 5)]
 
         with self.assertRaises(ValueError):
-            run_workflow.validate_chunk_coverage(messages, [messages[:2]])
+            chunking.validate_chunk_coverage(messages, [messages[:2]])
 
     def test_prompt_budget_split_preserves_order_and_coverage(self) -> None:
         messages = [message(index, "x" * 400) for index in range(1, 9)]
         initial = [messages]
-        chunks = run_workflow.split_chunks_by_prompt_budget(
+        chunks = chunking.split_chunks_by_prompt_budget(
             {"other_name": "Other"},
             initial,
             max_prompt_bytes=3200,
         )
 
-        run_workflow.validate_chunk_coverage(messages, chunks)
+        chunking.validate_chunk_coverage(messages, chunks)
         flattened = [item for chunk in chunks for item in chunk]
         self.assertEqual(flattened, messages)
         self.assertGreater(len(chunks), 1)
@@ -169,31 +172,31 @@ class ChunkingTests(unittest.TestCase):
 class EvidenceCompletenessTests(unittest.TestCase):
     def test_normalize_evidence_and_completion_marker_accept_good_chunk(self) -> None:
         text = complete_chunk_text()
-        evidence = run_workflow.normalize_chunk_evidence(text, chunk_meta())
+        evidence = chunk_evidence.normalize_chunk_evidence(text, chunk_meta())
 
         self.assertEqual(evidence["parse_status"], "ok")
-        self.assertTrue(run_workflow.is_complete_chunk_evidence(evidence))
+        self.assertTrue(chunk_evidence.is_complete_chunk_evidence(evidence))
 
     def test_raw_json_chunk_is_complete_without_marker(self) -> None:
         text = complete_chunk_json_text()
-        evidence = run_workflow.normalize_chunk_evidence(text, chunk_meta())
+        evidence = chunk_evidence.normalize_chunk_evidence(text, chunk_meta())
 
         self.assertEqual(evidence["parse_status"], "ok")
-        self.assertTrue(run_workflow.is_complete_chunk_evidence(evidence))
+        self.assertTrue(chunk_evidence.is_complete_chunk_evidence(evidence))
 
     def test_missing_json_is_incomplete(self) -> None:
         no_json = "## Analysis\nOnly prose.\n<!-- END_CHUNK_ANALYSIS -->"
 
-        evidence_without_json = run_workflow.normalize_chunk_evidence(no_json, chunk_meta())
+        evidence_without_json = chunk_evidence.normalize_chunk_evidence(no_json, chunk_meta())
 
-        self.assertFalse(run_workflow.is_complete_chunk_evidence(evidence_without_json))
+        self.assertFalse(chunk_evidence.is_complete_chunk_evidence(evidence_without_json))
 
     def test_embedded_balanced_json_can_be_extracted(self) -> None:
         text = 'prefix {"schema_version":"chat-evidence-v1","events":[],"relation_signals":[],"persona_signals":[],"counter_evidence":[],"uncertainties":[]} suffix'
-        evidence = run_workflow.normalize_chunk_evidence(text, chunk_meta())
+        evidence = chunk_evidence.normalize_chunk_evidence(text, chunk_meta())
 
         self.assertEqual(evidence["parse_status"], "ok")
-        self.assertTrue(run_workflow.is_complete_chunk_evidence(evidence))
+        self.assertTrue(chunk_evidence.is_complete_chunk_evidence(evidence))
 
     def test_existing_fallback_chunk_is_not_reused(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
@@ -213,13 +216,13 @@ class EvidenceCompletenessTests(unittest.TestCase):
                 encoding="utf-8",
             )
 
-            self.assertIsNone(run_workflow.load_existing_chunk_result(run_paths, 1))
+            self.assertIsNone(chunk_evidence.load_existing_chunk_result(run_paths, 1))
 
     def test_timeout_is_retryable(self) -> None:
-        self.assertTrue(run_workflow.should_retry_with_smaller_prompt(TimeoutError("timed out")))
+        self.assertTrue(llm_client.should_retry_with_smaller_prompt(TimeoutError("timed out")))
 
     def test_generate_chunk_analysis_returns_successful_token_budget(self) -> None:
-        original_call = run_workflow.call_llm_with_retry_result
+        original_call = chunk_evidence.call_llm_with_retry_result
         try:
             def fake_call(*args, **kwargs):
                 return llm_client.LLMRetryResult(
@@ -227,8 +230,8 @@ class EvidenceCompletenessTests(unittest.TestCase):
                     max_tokens_used=4800,
                 )
 
-            run_workflow.call_llm_with_retry_result = fake_call
-            _summary, evidence, used_max_tokens = run_workflow.generate_chunk_analysis(
+            chunk_evidence.call_llm_with_retry_result = fake_call
+            _summary, evidence, used_max_tokens = chunk_evidence.generate_chunk_analysis(
                 object(),
                 "prompt",
                 10,
@@ -236,15 +239,15 @@ class EvidenceCompletenessTests(unittest.TestCase):
                 initial_max_tokens=1200,
             )
         finally:
-            run_workflow.call_llm_with_retry_result = original_call
+            chunk_evidence.call_llm_with_retry_result = original_call
 
         self.assertEqual(evidence["parse_status"], "ok")
         self.assertEqual(used_max_tokens, 4800)
 
     def test_report_completion_marker_is_required(self) -> None:
-        run_workflow.require_completion_marker("ok <!-- END_FINAL_REPORT -->", "<!-- END_FINAL_REPORT -->", "report")
-        with self.assertRaises(run_workflow.IncompleteReportOutput):
-            run_workflow.require_completion_marker("not done", "<!-- END_FINAL_REPORT -->", "report")
+        llm_client.require_completion_marker("ok <!-- END_FINAL_REPORT -->", "<!-- END_FINAL_REPORT -->", "report")
+        with self.assertRaises(llm_client.IncompleteReportOutput):
+            llm_client.require_completion_marker("not done", "<!-- END_FINAL_REPORT -->", "report")
 
     def test_marked_report_retries_when_marker_is_missing(self) -> None:
         original_call = llm_client.call_llm_with_retry_result
@@ -312,23 +315,23 @@ class MergeCheckpointTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as tmp:
             merge_dir = Path(tmp) / "merge"
             cached = "cached summary\n<!-- END_MERGE_SUMMARY -->"
-            run_workflow.write_cached_merge_batch(merge_dir, 1, 1, cached)
+            summary_merge.write_cached_merge_batch(merge_dir, 1, 1, cached)
 
-            original_limit = run_workflow.SUMMARY_MAX_BYTES
-            original_call = run_workflow.call_llm_with_retry_result
+            original_limit = summary_merge.SUMMARY_MAX_BYTES
+            original_call = summary_merge.call_llm_with_retry_result
             calls = []
             try:
-                run_workflow.SUMMARY_MAX_BYTES = 10
+                summary_merge.SUMMARY_MAX_BYTES = 10
 
                 def fake_call(*args, **kwargs):
                     calls.append((args, kwargs))
                     return llm_client.LLMRetryResult(
                         content="new summary\n<!-- END_MERGE_SUMMARY -->",
-                        max_tokens_used=run_workflow.MERGE_MAX_OUTPUT_TOKENS,
+                        max_tokens_used=summary_merge.MERGE_MAX_OUTPUT_TOKENS,
                     )
 
-                run_workflow.call_llm_with_retry_result = fake_call
-                result = run_workflow.merge_summaries_if_needed(
+                summary_merge.call_llm_with_retry_result = fake_call
+                result = summary_merge.merge_summaries_if_needed(
                     "name",
                     ["a" * 100, "b" * 100],
                     "skill",
@@ -337,8 +340,8 @@ class MergeCheckpointTests(unittest.TestCase):
                     merge_dir=merge_dir,
                 )
             finally:
-                run_workflow.SUMMARY_MAX_BYTES = original_limit
-                run_workflow.call_llm_with_retry_result = original_call
+                summary_merge.SUMMARY_MAX_BYTES = original_limit
+                summary_merge.call_llm_with_retry_result = original_call
 
             self.assertEqual(result, [cached])
             self.assertEqual(calls, [])
@@ -346,23 +349,23 @@ class MergeCheckpointTests(unittest.TestCase):
     def test_merge_summary_ignores_incomplete_cached_batch(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             merge_dir = Path(tmp) / "merge"
-            run_workflow.write_cached_merge_batch(merge_dir, 1, 1, "incomplete")
+            summary_merge.write_cached_merge_batch(merge_dir, 1, 1, "incomplete")
 
-            original_limit = run_workflow.SUMMARY_MAX_BYTES
-            original_call = run_workflow.call_llm_with_retry_result
+            original_limit = summary_merge.SUMMARY_MAX_BYTES
+            original_call = summary_merge.call_llm_with_retry_result
             calls = []
             try:
-                run_workflow.SUMMARY_MAX_BYTES = 10
+                summary_merge.SUMMARY_MAX_BYTES = 10
 
                 def fake_call(*args, **kwargs):
                     calls.append((args, kwargs))
                     return llm_client.LLMRetryResult(
                         content="new summary\n<!-- END_MERGE_SUMMARY -->",
-                        max_tokens_used=run_workflow.MERGE_MAX_OUTPUT_TOKENS,
+                        max_tokens_used=summary_merge.MERGE_MAX_OUTPUT_TOKENS,
                     )
 
-                run_workflow.call_llm_with_retry_result = fake_call
-                result = run_workflow.merge_summaries_if_needed(
+                summary_merge.call_llm_with_retry_result = fake_call
+                result = summary_merge.merge_summaries_if_needed(
                     "name",
                     ["a" * 100, "b" * 100],
                     "skill",
@@ -371,18 +374,18 @@ class MergeCheckpointTests(unittest.TestCase):
                     merge_dir=merge_dir,
                 )
             finally:
-                run_workflow.SUMMARY_MAX_BYTES = original_limit
-                run_workflow.call_llm_with_retry_result = original_call
+                summary_merge.SUMMARY_MAX_BYTES = original_limit
+                summary_merge.call_llm_with_retry_result = original_call
 
             self.assertEqual(result, ["new summary\n<!-- END_MERGE_SUMMARY -->"])
             self.assertEqual(len(calls), 1)
 
     def test_merge_summary_reuses_successful_token_budget(self) -> None:
-        original_limit = run_workflow.SUMMARY_MAX_BYTES
-        original_call = run_workflow.call_llm_with_retry_result
+        original_limit = summary_merge.SUMMARY_MAX_BYTES
+        original_call = summary_merge.call_llm_with_retry_result
         calls = []
         try:
-            run_workflow.SUMMARY_MAX_BYTES = 10
+            summary_merge.SUMMARY_MAX_BYTES = 10
 
             def fake_call(*args, **kwargs):
                 calls.append((args, kwargs))
@@ -391,8 +394,8 @@ class MergeCheckpointTests(unittest.TestCase):
                     max_tokens_used=6400 if len(calls) == 1 else kwargs["max_tokens"],
                 )
 
-            run_workflow.call_llm_with_retry_result = fake_call
-            result = run_workflow.merge_summaries_if_needed(
+            summary_merge.call_llm_with_retry_result = fake_call
+            result = summary_merge.merge_summaries_if_needed(
                 "name",
                 ["a" * 25000, "b" * 25000],
                 "skill",
@@ -400,12 +403,12 @@ class MergeCheckpointTests(unittest.TestCase):
                 1,
             )
         finally:
-            run_workflow.SUMMARY_MAX_BYTES = original_limit
-            run_workflow.call_llm_with_retry_result = original_call
+            summary_merge.SUMMARY_MAX_BYTES = original_limit
+            summary_merge.call_llm_with_retry_result = original_call
 
         self.assertGreaterEqual(len(result), 1)
         self.assertGreaterEqual(len(calls), 2)
-        self.assertEqual(calls[0][1]["max_tokens"], run_workflow.MERGE_MAX_OUTPUT_TOKENS)
+        self.assertEqual(calls[0][1]["max_tokens"], summary_merge.MERGE_MAX_OUTPUT_TOKENS)
         self.assertEqual(calls[1][1]["max_tokens"], 6400)
 
 
@@ -453,7 +456,7 @@ class AutoShrinkTests(unittest.TestCase):
 
         self.assertEqual(result["status"], "success")
         self.assertEqual(len(calls), 2)
-        self.assertLess(calls[1]["chunk_size"], calls[0]["chunk_size"])
+        self.assertLess(calls[1]["settings"].chunk_size, calls[0]["settings"].chunk_size)
 
 
 class ArtifactAuditTests(unittest.TestCase):

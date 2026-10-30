@@ -13,6 +13,7 @@ from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'agent'))
+import chunking
 import evidence_store as store
 from analysis_artifacts import build_artifacts
 from evidence_grounding import ground_document, grounding_issues, LEDGER_VERSION, GROUNDING_VERSION
@@ -217,7 +218,7 @@ class EvidenceStoreTests(unittest.TestCase):
         config = SimpleNamespace(api_base='https://example.invalid', api_key='fake', model='synthetic')
         with patch('llm_client.call_llm', side_effect=[json.dumps({key: [] for key in KEYS}),
                 '合成报告 <!-- END_FINAL_REPORT -->']):
-            chunk_pipeline.run_single_workflow(artifacts, 'skill', config, 1, chunk_sleep=0)
+            chunk_pipeline.run_single_workflow(artifacts, 'skill', config, 1, settings=chunking.ChunkSettings(chunk_sleep=0))
         ledger = json.loads(artifacts['evidence_ledger_file'].read_text(encoding='utf-8'))
         self.assertEqual(ledger['redaction']['source_id'], ledger['source_id'])
         imported = store.ingest_ledger(artifacts['evidence_ledger_file'], self.db)

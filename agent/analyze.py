@@ -1,14 +1,14 @@
 """
 聊天记录预处理与统计分析脚本
-解析 WeFlow 导出的 JSON 聊天记录，提取结构化统计数据供 agent 深度分析。
+解析已适配的聊天消息，提取结构化统计数据供完整工作流和采样预览使用。
 """
 
 import sys
 from datetime import datetime
 from collections import Counter, defaultdict
 from pathlib import Path
+from functools import lru_cache
 
-sys.path.insert(0, str(Path(__file__).parent))
 
 from conversation_formats import read_conversation
 from evidence_grounding import identify_messages
@@ -33,8 +33,14 @@ def normalize_timestamp(value) -> float | None:
 
 
 def parse_message_time(time_str: str | None) -> datetime | None:
-    if not time_str:
+    if not isinstance(time_str, str) or not time_str:
         return None
+    return _parse_time_text(time_str)
+
+
+@lru_cache(maxsize=4096)
+def _parse_time_text(time_str: str) -> datetime | None:
+    # 日期/月/小时和会话统计共享解析；有界缓存不改变消息内容和证据编号。
     try:
         return datetime.strptime(time_str, TIME_FORMAT)
     except (TypeError, ValueError):
@@ -99,14 +105,7 @@ def parse_message(msg: dict, original_index: int | None = None) -> dict | None:
             "content": f"[{msg_type}]",
         }
 
-    if msg_type == "文本消息" and content:
-        return {
-            **base,
-            "type": msg_type,
-            "content": content,
-        }
-
-    # 其他消息类型（语音、视频、链接等）
+    # 有内容的文本、语音、视频、链接沿用相同结构；媒体占位符已在上方处理。
     if content:
         return {
             **base,

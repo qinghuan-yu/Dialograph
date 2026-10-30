@@ -12,9 +12,12 @@ from urllib.error import HTTPError
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / 'agent'))
+import chunking
 import evidence_validation
 import artifact_audit
 import chunk_pipeline as workflow
+import chunk_evidence
+import workflow_state
 import analysis_artifacts
 import analysis_service
 import llm_client
@@ -177,12 +180,12 @@ class InputAndEvidenceTests(unittest.TestCase):
         for data in ({}, {**valid, 'events': 'bad'}, {**valid, 'persona_signals': ['bad']},
                      {**valid, 'events': [{}]}):
             with self.subTest(data=data):
-                evidence = workflow.normalize_chunk_evidence(json.dumps(data), metadata())
-                self.assertFalse(workflow.is_complete_chunk_evidence(evidence))
+                evidence = chunk_evidence.normalize_chunk_evidence(json.dumps(data), metadata())
+                self.assertFalse(chunk_evidence.is_complete_chunk_evidence(evidence))
 
     def test_valid_empty_evidence_is_explicitly_insufficient(self):
-        evidence = workflow.normalize_chunk_evidence(json.dumps({key: [] for key in KEYS}), metadata())
-        self.assertTrue(workflow.is_complete_chunk_evidence(evidence))
+        evidence = chunk_evidence.normalize_chunk_evidence(json.dumps({key: [] for key in KEYS}), metadata())
+        self.assertTrue(chunk_evidence.is_complete_chunk_evidence(evidence))
         self.assertEqual(evidence.get('evidence_status'), 'insufficient')
 
     def test_summary_is_balanced_across_chunks_and_discloses_omission(self):
@@ -190,7 +193,7 @@ class InputAndEvidenceTests(unittest.TestCase):
                  'events': [{'summary': f'item-{i}-{j}'} for j in range(70)]} for i in (1, 2)]
         items = evidence_validation.balanced_items(docs, 'events', 60)
         self.assertEqual({item['chunk_index'] for item in items}, {1, 2})
-        summary = workflow.format_evidence_summary(docs)
+        summary = chunk_evidence.format_evidence_summary(docs)
         self.assertIn('总数 140', summary)
         self.assertIn('省略 80', summary)
 
@@ -231,14 +234,14 @@ class ResumeTests(unittest.TestCase):
             artifacts['analysis_file'].write_text('OLD FULL REPORT', encoding='utf-8')
             text = json.dumps({key: [] for key in KEYS})
             def generated(config, prompt, timeout, meta, **kwargs):
-                return text, workflow.normalize_chunk_evidence(text, meta), 1200
+                return text, chunk_evidence.normalize_chunk_evidence(text, meta), 1200
             failed = artifact_audit.AuditResult('test')
             failed.add_error('test failure')
-            with patch.object(workflow, 'generate_chunk_analysis', side_effect=generated), \
+            with patch.object(chunk_evidence, 'generate_chunk_analysis', side_effect=generated), \
                  patch.object(workflow, 'generate_marked_report', return_value='report <!-- END_FINAL_REPORT -->'), \
                  patch.object(workflow, 'audit_artifacts', return_value=failed):
                 with self.assertRaisesRegex(ValueError, '审计'):
-                    workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, chunk_sleep=0)
+                    workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
             self.assertEqual(artifacts['analysis_file'].read_text(encoding='utf-8'), 'OLD FULL REPORT')
 
     def test_resume_reuses_valid_chunks_and_retains_identity_after_success(self):
@@ -246,15 +249,15 @@ class ResumeTests(unittest.TestCase):
             artifacts = self.prepare(Path(tmp))
             text = json.dumps({key: [] for key in KEYS})
             def generated(config, prompt, timeout, meta, **kwargs):
-                return text, workflow.normalize_chunk_evidence(text, meta), 1200
-            with patch.object(workflow, 'generate_chunk_analysis', side_effect=generated), \
+                return text, chunk_evidence.normalize_chunk_evidence(text, meta), 1200
+            with patch.object(chunk_evidence, 'generate_chunk_analysis', side_effect=generated), \
                  patch.object(workflow, 'generate_marked_report', side_effect=RuntimeError('final stop')):
                 with self.assertRaisesRegex(RuntimeError, 'final stop'):
-                    workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, chunk_size=2, chunk_sleep=0)
+                    workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_size=2, chunk_sleep=0))
             run = next(artifacts['runs_dir'].iterdir())
-            with patch.object(workflow, 'generate_chunk_analysis', side_effect=AssertionError('cached chunks must not call api')) as chunk_api, \
+            with patch.object(chunk_evidence, 'generate_chunk_analysis', side_effect=AssertionError('cached chunks must not call api')) as chunk_api, \
                  patch.object(workflow, 'generate_marked_report', return_value='report <!-- END_FINAL_REPORT -->'):
-                workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, resume_run_id=run.name, chunk_sleep=0)
+                workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, resume_run_id=run.name, settings=chunking.ChunkSettings(chunk_sleep=0))
             self.assertEqual(chunk_api.call_count, 0)
             saved = json.loads((run / 'run_metadata.json').read_text(encoding='utf-8'))
             self.assertEqual(saved['status'], 'success')
@@ -266,11 +269,11 @@ class ResumeTests(unittest.TestCase):
             artifacts = self.prepare(Path(tmp))
             run = self.interrupted_run(artifacts)
             saved = (run / 'run_metadata.json').read_bytes()
-            evidence = workflow.normalize_chunk_evidence(json.dumps({key: [] for key in KEYS}), metadata())
+            evidence = chunk_evidence.normalize_chunk_evidence(json.dumps({key: [] for key in KEYS}), metadata())
             evidence['message_range']['end'] = 999
-            paths = workflow.build_run_paths(artifacts, run.name)
+            paths = workflow_state.build_run_paths(artifacts, run.name)
             (paths['chunk_dir'] / 'chunk_001.md').write_text('cached', encoding='utf-8')
-            workflow.write_chunk_evidence(paths['evidence_dir'], evidence)
+            chunk_evidence.write_chunk_evidence(paths['evidence_dir'], evidence)
             with self.assertRaisesRegex(ValueError, '范围'):
                 workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, resume_run_id=run.name)
             self.assertEqual((run / 'run_metadata.json').read_bytes(), saved)
@@ -281,23 +284,22 @@ class ResumeTests(unittest.TestCase):
         return analysis_artifacts.build_artifacts(source, root / 'out')
 
     def interrupted_run(self, artifacts):
-        with patch.object(workflow, 'generate_chunk_analysis', side_effect=RuntimeError('stop')):
+        with patch.object(chunk_evidence, 'generate_chunk_analysis', side_effect=RuntimeError('stop')):
             with self.assertRaisesRegex(RuntimeError, 'stop'):
-                workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, chunk_size=2,
-                    chunk_max_bytes=13000, chunk_max_prompt_bytes=20000, chunk_sleep=0)
+                workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_size=2, chunk_max_bytes=13000, chunk_max_prompt_bytes=20000, chunk_sleep=0))
         return next(artifacts['runs_dir'].iterdir())
 
     def test_run_ids_do_not_collide_within_one_second(self):
-        self.assertEqual(len({workflow.make_run_id() for _ in range(20)}), 20)
+        self.assertEqual(len({workflow_state.make_run_id() for _ in range(20)}), 20)
 
     def test_resume_restores_limits_instead_of_repartitioning(self):
         with tempfile.TemporaryDirectory() as tmp:
             artifacts = self.prepare(Path(tmp))
             run = self.interrupted_run(artifacts)
             before = (run / f'分块覆盖清单_{artifacts["safe_name"]}.json').read_bytes()
-            with patch.object(workflow, 'generate_chunk_analysis', side_effect=RuntimeError('stop')):
+            with patch.object(chunk_evidence, 'generate_chunk_analysis', side_effect=RuntimeError('stop')):
                 with self.assertRaisesRegex(RuntimeError, 'stop'):
-                    workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, resume_run_id=run.name, chunk_sleep=0)
+                    workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, resume_run_id=run.name, settings=chunking.ChunkSettings(chunk_sleep=0))
             self.assertEqual((run / f'分块覆盖清单_{artifacts["safe_name"]}.json').read_bytes(), before)
             state = json.loads((run / 'run_metadata.json').read_text(encoding='utf-8'))
             self.assertEqual(state['chunk_size'], 2)
@@ -312,7 +314,7 @@ class ResumeTests(unittest.TestCase):
             data['messages'][0]['content'] = 'changed'
             artifacts['chat_file'].write_text(json.dumps(data), encoding='utf-8')
             changed = analysis_artifacts.build_artifacts(artifacts['chat_file'], Path(tmp) / 'out')
-            with patch.object(workflow, 'generate_chunk_analysis', side_effect=AssertionError('no api')):
+            with patch.object(chunk_evidence, 'generate_chunk_analysis', side_effect=AssertionError('no api')):
                 with self.assertRaisesRegex(ValueError, '输入|指纹'):
                     workflow.run_single_workflow(changed, 'skill', CONFIG, 5, resume_run_id=run.name)
             self.assertEqual((run / 'run_metadata.json').read_bytes(), saved)

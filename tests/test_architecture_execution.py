@@ -12,6 +12,8 @@ from urllib.error import HTTPError
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent'))
 import chunk_pipeline as workflow
+import chunking
+import chunk_evidence
 import analysis_artifacts
 import report_generation
 import llm_client
@@ -33,7 +35,7 @@ def synthetic_summaries():
             'persona_signals': [dict(item, trait='维度', stability='local', signal=f'人物{index}')],
             'counter_evidence': [dict(item, against=f'反证{index}')],
             'uncertainties': [{'question': f'疑问{index}', 'reason': '合成未知信息'}]})
-    return workflow.format_evidence_summary(documents), [workflow.format_evidence_summary([doc]) for doc in documents]
+    return chunk_evidence.format_evidence_summary(documents), [chunk_evidence.format_evidence_summary([doc]) for doc in documents]
 
 
 class BudgetTests(unittest.TestCase):
@@ -73,7 +75,7 @@ class RequestRecoveryTests(unittest.TestCase):
     def test_bad_request_and_rate_limit_do_not_request_smaller_chunks(self):
         for code in (400, 401, 429, 500, 503):
             with self.subTest(code=code):
-                self.assertFalse(workflow.should_retry_with_smaller_prompt(
+                self.assertFalse(llm_client.should_retry_with_smaller_prompt(
                     HTTPError(CONFIG.api_base, code, 'synthetic', {}, None)))
 
     def test_bad_request_fails_without_repeating_the_request(self):
@@ -110,8 +112,7 @@ class RequestRecoveryTests(unittest.TestCase):
             with patch.object(llm_client, 'call_llm', side_effect=[response] + [error] * 20) as api, \
                  patch.object(workflow.time, 'sleep'), contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaises(HTTPError):
-                    workflow.run_single_workflow_with_auto_shrink(artifacts, 'skill', CONFIG, 1,
-                        chunk_size=1, chunk_sleep=0)
+                    workflow.run_single_workflow_with_auto_shrink(artifacts, 'skill', CONFIG, 1, settings=chunking.ChunkSettings(chunk_size=1, chunk_sleep=0))
             runs = list(artifacts['runs_dir'].iterdir())
             self.assertEqual(len(runs), 1)
             self.assertEqual(api.call_count, 4)
@@ -126,7 +127,7 @@ class ReportLifecycleTests(unittest.TestCase):
         with patch.object(llm_client, 'call_llm', side_effect=[json.dumps({key: [] for key in KEYS}),
                 'relation <!-- END_FINAL_REPORT -->', 'old persona <!-- END_PERSONA_REPORT -->']), \
              contextlib.redirect_stdout(io.StringIO()):
-            workflow.run_single_workflow(artifacts, 'skill', CONFIG, 1, chunk_sleep=0)
+            workflow.run_single_workflow(artifacts, 'skill', CONFIG, 1, settings=chunking.ChunkSettings(chunk_sleep=0))
             report_generation.generate_persona_report(artifacts, 'skill', CONFIG, 1)
         return artifacts
 

@@ -7,7 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent'))
-import chunk_pipeline as workflow
+import run_promotion
 
 
 class PromotionTests(unittest.TestCase):
@@ -44,7 +44,7 @@ class PromotionTests(unittest.TestCase):
     def test_missing_source_preserves_all_published_outputs(self):
         self.run['analysis_file'].unlink()
         with self.assertRaises(FileNotFoundError):
-            workflow.promote_successful_run(self.artifacts, self.run)
+            run_promotion.promote_successful_run(self.artifacts, self.run)
         self.assert_old()
 
     def test_mid_publish_failure_restores_old_files_directories_and_pointer(self):
@@ -60,11 +60,11 @@ class PromotionTests(unittest.TestCase):
                         raise OSError('simulated disk failure')
                     return real_replace(src, dst)
                 with patch('os.replace', side_effect=fail_once), self.assertRaises(OSError):
-                    workflow.promote_successful_run(self.artifacts, self.run)
+                    run_promotion.promote_successful_run(self.artifacts, self.run)
                 self.assert_old()
 
     def test_success_publishes_complete_snapshot_and_pointer(self):
-        workflow.promote_successful_run(self.artifacts, self.run)
+        run_promotion.promote_successful_run(self.artifacts, self.run)
         for key, path in self.artifacts.items():
             if key == 'latest_run_file':
                 self.assertEqual(json.loads(path.read_text(encoding='utf-8'))['run_id'], 'test-run')

@@ -20,6 +20,7 @@ talks/
 analysis/
 LONG_TERM_OPTIMIZATION_PLAN.md
 docs/ARCHITECTURE_EXECUTION.md
+docs/*.local.md
 privacy_terms.local.txt
 privacy_terms.local.json
 *.sqlite3

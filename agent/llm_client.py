@@ -113,6 +113,7 @@ def retry_delay(exc: Exception, attempt: int, base_seconds: float) -> float:
                 try:
                     return max(0, (parsedate_to_datetime(value) - datetime.now(timezone.utc)).total_seconds())
                 except (ValueError, TypeError, OverflowError):
+                    # Retry-After 非法时使用下方的指数退避，不能让坏响应头阻断重试。
                     pass
     return base_seconds * 2 ** (attempt - 1)
 
@@ -126,7 +127,6 @@ def call_llm_with_retry_result(
     max_attempts: int = 3,
     retry_sleep_seconds: float = 3.0,
 ) -> LLMRetryResult:
-    last_error: Exception | None = None
     current_max_tokens = max_tokens
     for attempt in range(1, max_attempts + 1):
         try:
@@ -144,7 +144,6 @@ def call_llm_with_retry_result(
             )
             return LLMRetryResult(content=current_redactor().response(content), max_tokens_used=current_max_tokens)
         except Exception as exc:  # noqa: BLE001
-            last_error = exc
             if isinstance(exc, LLMOutputTruncated) and attempt < max_attempts:
                 current_max_tokens = min(current_max_tokens * 2, 8000)
                 print(f"- 输出被 max_tokens 截断，提升输出上限后重试: {current_max_tokens}")
@@ -155,8 +154,6 @@ def call_llm_with_retry_result(
                 time.sleep(retry_delay(exc, attempt, retry_sleep_seconds))
                 continue
             raise
-    if last_error is not None:
-        raise last_error
     raise RuntimeError("LLM 调用失败")
 
 

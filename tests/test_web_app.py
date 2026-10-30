@@ -110,8 +110,9 @@ class WebAppTests(unittest.TestCase):
         with patch('web_worker.load_llm_config', return_value=config), patch('chunk_pipeline.run_single_workflow_with_auto_shrink', side_effect=RuntimeError('test-stop')) as run:
             with self.assertRaisesRegex(RuntimeError, 'test-stop'):
                 run_job(self.root, job_dir, {'mode': 'full', 'resume': True}, lambda event: None)
-        self.assertEqual(run.call_args.kwargs['chunk_size'], 660)
-        self.assertEqual(run.call_args.kwargs['chunk_max_prompt_bytes'], 18000)
+        self.assertEqual(run.call_args.kwargs['settings'].chunk_size, 660)
+        self.assertEqual(run.call_args.kwargs['settings'].chunk_max_bytes, 12000)
+        self.assertEqual(run.call_args.kwargs['settings'].chunk_max_prompt_bytes, 18000)
 
     def test_completed_reports_regenerate_after_same_length_input_change(self):
         job_dir = self.root / 'job'

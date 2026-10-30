@@ -8,7 +8,7 @@ import re
 import sys
 from pathlib import Path
 
-from chunk_pipeline import CHUNK_MESSAGE_COUNT
+from chunking import CHUNK_MESSAGE_COUNT
 import report_generation
 from analysis_artifacts import build_artifacts
 from config import load_llm_config
@@ -59,6 +59,7 @@ class ProgressStream(io.TextIOBase):
         return len(text)
 
     def flush(self):
+        # 事件按整行提交；flush 不能将未完成的一行发送为独立进度事件。
         pass
 
 

@@ -9,6 +9,7 @@ from analyze import (load_chat, parse_chat_messages, compute_statistics,
 from privacy_redaction import redact_conversation
 from output_paths import get_support_output_dir, sanitize_filename
 from preview_prompts import generate_analysis_prompt
+from analysis_types import AnalysisArtifacts
 
 def format_stats_summary(stats: dict) -> str:
     lines = [
@@ -21,21 +22,21 @@ def format_stats_summary(stats: dict) -> str:
         f"- 对方发送: {stats['other_message_count']} ({stats['other_message_count'] / stats['total_messages'] * 100:.1f}%)",
         f"- 每日首条消息: 我={stats['daily_first_msg'].get('me', 0)}天, 对方={stats['daily_first_msg'].get('other', 0)}天",
         f"- 每日末条消息: 我={stats['daily_last_msg'].get('me', 0)}天, 对方={stats['daily_last_msg'].get('other', 0)}天",
-        f"- 会话切分间隔: {stats.get('session_gap_hours', 4)}小时",
-        f"- 总会话数: {stats.get('session_count', 0)}",
-        f"- 会话发起者: 我={stats.get('session_initiators', {}).get('me', 0)}次, 对方={stats.get('session_initiators', {}).get('other', 0)}次",
-        f"- 会话收尾者: 我={stats.get('session_closers', {}).get('me', 0)}次, 对方={stats.get('session_closers', {}).get('other', 0)}次",
-        f"- 平均每会话消息数: {stats.get('avg_session_message_count')} 条, 中位 {stats.get('median_session_message_count')} 条",
-        f"- 平均会话时长: {stats.get('avg_session_duration_minutes')} 分钟, 中位 {stats.get('median_session_duration_minutes')} 分钟",
+        f"- 会话切分间隔: {stats['session_gap_hours']}小时",
+        f"- 总会话数: {stats['session_count']}",
+        f"- 会话发起者: 我={stats['session_initiators'].get('me', 0)}次, 对方={stats['session_initiators'].get('other', 0)}次",
+        f"- 会话收尾者: 我={stats['session_closers'].get('me', 0)}次, 对方={stats['session_closers'].get('other', 0)}次",
+        f"- 平均每会话消息数: {stats['avg_session_message_count']} 条, 中位 {stats['median_session_message_count']} 条",
+        f"- 平均会话时长: {stats['avg_session_duration_minutes']} 分钟, 中位 {stats['median_session_duration_minutes']} 分钟",
         f"- 我的平均回复间隔: {stats['reply_time_my_avg_seconds']} 秒, 中位 {stats['reply_time_my_median_seconds']} 秒",
         f"- 对方平均回复间隔: {stats['reply_time_other_avg_seconds']} 秒, 中位 {stats['reply_time_other_median_seconds']} 秒",
-        f"- 会话内我的平均回复: {stats.get('session_reply_time_my_avg_seconds')} 秒",
-        f"- 会话内对方平均回复: {stats.get('session_reply_time_other_avg_seconds')} 秒",
+        f"- 会话内我的平均回复: {stats['session_reply_time_my_avg_seconds']} 秒",
+        f"- 会话内对方平均回复: {stats['session_reply_time_other_avg_seconds']} 秒",
         f"- 我的平均文本长度: {stats['avg_my_msg_length']} 字",
         f"- 对方平均文本长度: {stats['avg_other_msg_length']} 字",
         f"- 深夜消息数: {stats['late_night_message_count']}",
-        f"- 时间格式异常消息: {stats.get('invalid_time_message_count', 0)}",
-        f"- 时间戳异常消息: {stats.get('invalid_timestamp_message_count', 0)}",
+        f"- 时间格式异常消息: {stats['invalid_time_message_count']}",
+        f"- 时间戳异常消息: {stats['invalid_timestamp_message_count']}",
         "- 月度趋势:",
     ]
     for item in stats["monthly_trend"]:
@@ -46,16 +47,16 @@ def format_stats_summary(stats: dict) -> str:
 def format_parse_diagnostics_report(diagnostics: dict) -> str:
     lines = [
         "## 解析诊断",
-        f"- 原始消息数: {diagnostics.get('raw_message_count', 0)}",
-        f"- 有效解析消息数: {diagnostics.get('parsed_message_count', 0)}",
-        f"- 跳过消息数: {diagnostics.get('skipped_message_count', 0)}",
-        f"- 是否重新排序: {diagnostics.get('sort_changed', False)}",
-        f"- 时间格式异常消息: {diagnostics.get('invalid_time_message_count', 0)}",
-        f"- 时间戳异常消息: {diagnostics.get('invalid_timestamp_message_count', 0)}",
+        f"- 原始消息数: {diagnostics['raw_message_count']}",
+        f"- 有效解析消息数: {diagnostics['parsed_message_count']}",
+        f"- 跳过消息数: {diagnostics['skipped_message_count']}",
+        f"- 是否重新排序: {diagnostics['sort_changed']}",
+        f"- 时间格式异常消息: {diagnostics['invalid_time_message_count']}",
+        f"- 时间戳异常消息: {diagnostics['invalid_timestamp_message_count']}",
         "",
         "### 跳过原因",
     ]
-    skip_reasons = diagnostics.get("skip_reasons", {})
+    skip_reasons = diagnostics["skip_reasons"]
     if skip_reasons:
         for reason, count in sorted(skip_reasons.items()):
             lines.append(f"- {reason}: {count}")
@@ -63,7 +64,7 @@ def format_parse_diagnostics_report(diagnostics: dict) -> str:
         lines.append("- 无")
 
     lines.append("\n### 原始消息类型")
-    message_types = diagnostics.get("message_types", {})
+    message_types = diagnostics["message_types"]
     if message_types:
         for msg_type, count in sorted(message_types.items(), key=lambda item: item[1], reverse=True):
             lines.append(f"- {msg_type}: {count}")
@@ -78,10 +79,10 @@ def build_artifacts(
     write_supporting_files: bool = True,
     redaction_terms: list[str] | None = None,
     include_preview_prompt: bool = False,
-) -> dict:
+) -> AnalysisArtifacts:
     data, redaction, redactor, output_name = redact_conversation(load_chat(str(chat_file)), redaction_terms)
-    session = data.get("session", {})
-    raw_messages = data.get("messages", [])
+    session = data["session"]
+    raw_messages = data["messages"]
     parse_result = parse_chat_messages(raw_messages, session)
     messages = parse_result["messages"]
     parse_diagnostics = parse_result["diagnostics"]

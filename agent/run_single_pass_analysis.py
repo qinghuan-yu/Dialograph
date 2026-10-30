@@ -5,40 +5,14 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
 
-from analyze import extract_conversation_segments, extract_text_samples  # noqa: E402
-from config import load_llm_config  # noqa: E402
-from report_output import write_report  # noqa: E402
+from preview_support import preview_materials, generate_preview
+from analysis_types import AnalysisArtifacts
+from config import load_llm_config
+from report_output import write_report
 from privacy_redaction import redact_artifact_call
-from llm_client import call_llm_with_retry, should_retry_with_smaller_prompt
 from analysis_artifacts import build_artifacts, select_chat_files
 from report_generation import load_skill_prompt
-
-def compact_segments(segments: list[list[dict]], max_messages_per_segment: int = 18) -> str:
-    lines = []
-    for index, segment in enumerate(segments, start=1):
-        lines.append(f"--- 片段 {index} ({segment[0]['time_str'][:10]}) ---")
-        if len(segment) <= max_messages_per_segment:
-            selected = segment
-        else:
-            head = max_messages_per_segment // 2
-            tail = max_messages_per_segment - head
-            selected = segment[:head] + segment[-tail:]
-
-        for message in selected:
-            prefix = "【我】" if message["sender"] == "me" else "【对方】"
-            lines.append(f"{message['time_str'][11:16]} {prefix} {message['content']}")
-    return "\n".join(lines)
-
-
-def compact_samples(samples: list[dict], max_count: int = 80) -> str:
-    selected = samples[:max_count]
-    lines = []
-    for message in selected:
-        prefix = "【我】" if message["sender"] == "me" else "【对方】"
-        lines.append(f"{message['time_str']} {prefix} {message['content']}")
-    return "\n".join(lines)
 
 
 def build_single_pass_prompt(name: str, stats_summary: str, segment_text: str, sample_text: str) -> str:
@@ -108,51 +82,15 @@ def build_single_pass_prompt(name: str, stats_summary: str, segment_text: str, s
 
 
 @redact_artifact_call(position=2)
-def generate_report_with_fallback(llm_config, skill_prompt: str, artifacts: dict) -> str:
-    primary_prompt = build_single_pass_prompt(
-        artifacts["name"],
-        artifacts["stats_summary"],
-        compact_segments(
-            extract_conversation_segments(artifacts["messages"], n_segments=12),
-            max_messages_per_segment=16,
-        ),
-        compact_samples(extract_text_samples(artifacts["messages"], n_samples=60), max_count=60),
-    )
+def generate_report_with_fallback(llm_config, skill_prompt: str, artifacts: AnalysisArtifacts) -> str:
+    def prompt(compact=False):
+        segments, samples = preview_materials(artifacts, compact=compact)
+        return build_single_pass_prompt(artifacts['name'], artifacts['stats_summary'], segments, samples)
 
+    primary_prompt = prompt()
     print(f"单次提示词大小: {len(primary_prompt.encode('utf-8'))} bytes")
     print("正在调用模型生成最终关系分析...")
-    try:
-        return call_llm_with_retry(
-            llm_config,
-            skill_prompt,
-            primary_prompt,
-            timeout=1800,
-            max_tokens=4200,
-            max_attempts=1,
-        )
-    except Exception as exc:  # noqa: BLE001
-        if not should_retry_with_smaller_prompt(exc):
-            raise
-
-        fallback_prompt = build_single_pass_prompt(
-            artifacts["name"],
-            artifacts["stats_summary"],
-            compact_segments(
-                extract_conversation_segments(artifacts["messages"], n_segments=8),
-                max_messages_per_segment=12,
-            ),
-            compact_samples(extract_text_samples(artifacts["messages"], n_samples=30), max_count=30),
-        )
-        print(f"- 主请求失败，切换紧凑回退: {exc}")
-        print(f"- 回退提示词大小: {len(fallback_prompt.encode('utf-8'))} bytes")
-        return call_llm_with_retry(
-            llm_config,
-            skill_prompt,
-            fallback_prompt,
-            timeout=1800,
-            max_tokens=3200,
-            max_attempts=2,
-        )
+    return generate_preview(llm_config, skill_prompt, primary_prompt, lambda: prompt(compact=True))
 
 
 def main() -> int:

@@ -139,6 +139,7 @@ class WebService:
             (job_dir / 'request.json').write_text(json.dumps(options), encoding='utf-8')
             state.update(status='queued', stage='prepare', message='等待工作流启动。', files={}, current=0, total=0, completed=0)
             state.pop('finished', None)
+            state.pop('failure_kind', None)
             self.jobs[state['id']] = state
             self.save(state)
             threading.Thread(target=self.run, args=(state['id'],), daemon=True).start()
@@ -196,11 +197,13 @@ class WebService:
                             state['status'] = 'failed'
                     self.save(state)
             code = process.wait()
-        except Exception:
+        except Exception as exc:
+            # 子进程事件边界必须释放任务；仅记录异常类型，不暴露可能含原文的异常详情。
             received_error = True
             with self.lock:
                 if state['status'] != 'cancelled':
-                    state.update(status='failed', message='分析进程事件读取失败，可继续任务。')
+                    state.update(status='failed', message='分析进程事件读取失败，可继续任务。',
+                                 failure_kind=type(exc).__name__)
         finally:
             try:
                 if process.poll() is None:
@@ -295,6 +298,7 @@ def make_handler(service, port):
             self.connection.settimeout(30)
 
         def log_message(self, *_):
+            # 默认访问日志包含路径等本地信息，网页服务不将其写入终端。
             pass
 
         def send(self, status, body, kind='application/json; charset=utf-8', filename=None):

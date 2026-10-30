@@ -10,6 +10,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent'))
+import chunking
 import chunk_pipeline as workflow
 import analysis_artifacts
 import run_workflow as workflow_cli
@@ -94,7 +95,7 @@ class PrivacyPipelineTests(unittest.TestCase):
             self.assert_redacted(kwargs['system_prompt'] + kwargs['user_prompt'])
             return responses.pop(0)
         with patch.object(llm_client, 'call_llm', side_effect=api), contextlib.redirect_stdout(io.StringIO()):
-            workflow.run_single_workflow(artifacts, 'skill', config, 5, chunk_sleep=0)
+            workflow.run_single_workflow(artifacts, 'skill', config, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
             report_generation.generate_persona_report(artifacts, 'skill', config, 5)
         for path in (self.root / 'out').rglob('*'):
             if path.is_file():
@@ -145,7 +146,7 @@ class PrivacyPipelineTests(unittest.TestCase):
         config = SimpleNamespace(model='test', api_base='https://test.invalid', api_key='test-only')
         with patch.object(llm_client, 'call_llm', side_effect=[encoded, '报告 <!-- END_FINAL_REPORT -->']), \
              contextlib.redirect_stdout(io.StringIO()):
-            workflow.run_single_workflow(artifacts, 'skill', config, 5, chunk_sleep=0)
+            workflow.run_single_workflow(artifacts, 'skill', config, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
         for path in artifacts['runs_dir'].rglob('*'):
             if path.suffix in ('.json', '.md') and path.is_file():
                 text = path.read_text(encoding='utf-8')
@@ -158,7 +159,7 @@ class PrivacyPipelineTests(unittest.TestCase):
         with patch.object(llm_client, 'call_llm', side_effect=ValueError('bad 示例乙姓名 13800138000')), \
              contextlib.redirect_stdout(io.StringIO()):
             with self.assertRaises(ValueError) as caught:
-                workflow.run_single_workflow(artifacts, 'skill', config, 5, chunk_sleep=0)
+                workflow.run_single_workflow(artifacts, 'skill', config, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
         self.assert_redacted(str(caught.exception))
 
     def test_opaque_evidence_ids_are_not_mistaken_for_phones_inside_hashes(self):
@@ -201,7 +202,7 @@ class PrivacyPipelineTests(unittest.TestCase):
         with patch.object(llm_client, 'call_llm', return_value=json.dumps(payload)), \
              patch.object(workflow, 'generate_marked_report', return_value='报告 <!-- END_FINAL_REPORT -->'), \
              contextlib.redirect_stdout(io.StringIO()):
-            workflow.run_single_workflow(artifacts, 'skill', config, 5, chunk_sleep=0)
+            workflow.run_single_workflow(artifacts, 'skill', config, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
         ledger = json.loads(artifacts['evidence_ledger_file'].read_text(encoding='utf-8'))
         self.assertEqual(ledger['documents'][0]['events'][0]['confidence'], 'low')
 

@@ -14,18 +14,23 @@
 - `analyze.py`：聊天导出读取、消息解析、时间排序、解析诊断、统计、会话建模、全量文本导出。
 - `analysis_artifacts.py`：共享脱敏预处理、统计摘要与产物路径；采样 prompt 按需生成。
 - `analysis_service.py`：CLI/Web 共用的复用、自动续跑选择、关系/侧写生成和最终审计决策。
-- `chunk_pipeline.py`：连续分块、请求检查点、原文绑定、证据汇总及关系报告运行。
+- `chunk_pipeline.py`：分块证据、阶段总结与关系报告的编排，以及限定于分块失败的缩块重跑。
+- `chunking.py`：消息/字节/提示词预算分块、覆盖说明、分块提示词，以及不可变的 `ChunkSettings` 配置。
+- `chunk_evidence.py`：模型 JSON 提取、证据规范化、账本和摘要写入，以及分块缓存核验。
+- `summary_merge.py`：阶段总结的压缩合并、完成标记和批次缓存。
+- `analysis_types.py`：产物、运行路径和分块清单的 `TypedDict` 约定，保留现有 JSON 字典形状。
 - `llm_client.py`：HTTP 请求、错误分类、退避、输出截断和完成标记重试。
 - `prompt_budget.py`：按证据类别和时间轴选择报告材料，严格限制材料字节数并披露省略。
 - `report_generation.py`：关系/侧写提示词以及侧写暂存、审计和发布。
 - `run_promotion.py`：文件组发布及异常回滚；关系快照指针最后更新。
 - `preprocess_cli.py` / `preview_prompts.py`：共享预处理交互与采样 prompt 模板。
+- `preview_support.py`：两个采样预览入口共用的材料压缩和请求回退；预览入口不互相导入。
 - `config.py`：读取 `.env` 中的 LLM API 配置。
 - `output_paths.py`：输出目录与文件名清洗。
 - `report_output.py`：报告写入和元数据写入。
 - `conversation_input.py`：网页与 CLI 共用的 WeFlow 私聊输入契约。
 - `conversation_formats.py`：统一 JSON v1、Alpha Markdown 与 WeFlow 的格式适配、文件发现和读取边界，详见 [导入协议](../docs/CONVERSATION_INPUT.md)。
-- `workflow_state.py`：续跑输入/流程指纹和保存参数的校验。
+- `workflow_state.py`：运行路径、元数据、续跑输入/流程指纹和保存参数校验；用 `PreparedRun` 汇集预检结果，全部预检通过后才写入运行材料。
 - `evidence_validation.py`：证据字段/枚举校验及跨块摘要取样。
 - `evidence_grounding.py`：输入快照和消息编号、逐字引文绑定、歧义隔离、证据编号及独立重算校验，详见 [原文绑定说明](../docs/EVIDENCE_GROUNDING.md)。
 - `evidence_store.py`：校验 v2 脱敏账本，按快照隔离的 SQLite/FTS5 中文查询和来源回查，详见 [证据检索](../docs/EVIDENCE_RETRIEVAL.md)。
@@ -51,3 +56,5 @@
 - 项目根目录 `.env.example`：LLM API 配置模板；复制为本地 `.env` 后填写自己的配置。
 
 本轮可靠性范围、验证记录和后续边界见 [可靠性改进记录](../docs/RELIABILITY_PASS.md)。
+
+2026-10-30 的模块归属、保留入口的理由及验证结果见 [结构优化记录](../docs/STRUCTURE_REFACTOR.md)。CLI 命令和参数保持不变；内部调用使用 `ChunkSettings`，不再从 `chunk_pipeline` 导入已迁移的辅助函数。流程指纹已更新，不兼容旧缓存会按现有规则拒绝复用。

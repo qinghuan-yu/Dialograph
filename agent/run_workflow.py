@@ -3,18 +3,16 @@ from __future__ import annotations
 
 import argparse
 import json
-import sys
 from pathlib import Path
 from urllib import error
 
-sys.path.insert(0, str(Path(__file__).parent))
 
 from analysis_artifacts import build_artifacts, select_chat_files
 from analysis_service import analyze_conversation
 from config import load_llm_config
 from privacy_redaction import load_redaction_terms
 from report_generation import load_skill_prompt
-from chunk_pipeline import (CHUNK_REQUEST_TIMEOUT, CHUNK_REQUEST_SLEEP_SECONDS,
+from chunking import (CHUNK_REQUEST_TIMEOUT, CHUNK_REQUEST_SLEEP_SECONDS,
                             CHUNK_MESSAGE_COUNT, CHUNK_MAX_TRANSCRIPT_BYTES,
                             CHUNK_MAX_PROMPT_BYTES)
 

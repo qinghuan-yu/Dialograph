@@ -11,6 +11,8 @@ from unittest.mock import patch
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'agent'))
 from analyze import parse_chat_messages
 import chunk_pipeline as workflow
+import chunking
+import workflow_state
 import analysis_artifacts
 import report_generation
 import llm_client
@@ -82,7 +84,7 @@ class GroundingPipelineTests(unittest.TestCase):
     def run_pipeline(self, payload, **options):
         with patch.object(llm_client, 'call_llm', return_value=json.dumps(payload, ensure_ascii=False)), \
              patch.object(workflow, 'generate_marked_report', return_value='报告 <!-- END_FINAL_REPORT -->'):
-            workflow.run_single_workflow(self.artifacts, 'test skill', CONFIG, 5, chunk_sleep=0, **options)
+            workflow.run_single_workflow(self.artifacts, 'test skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_sleep=0, **options))
         return json.loads(self.artifacts['evidence_ledger_file'].read_text(encoding='utf-8'))
 
     def test_exact_quote_has_id_offsets_sender_and_original_position(self):
@@ -102,7 +104,7 @@ class GroundingPipelineTests(unittest.TestCase):
                                    event('[图片消息]', '不能把占位符当原话'), event('系统提示')])
         with patch.object(llm_client, 'call_llm', return_value=json.dumps(payload, ensure_ascii=False)), \
              patch.object(workflow, 'generate_marked_report', return_value='报告 <!-- END_FINAL_REPORT -->') as final:
-            workflow.run_single_workflow(self.artifacts, 'skill', CONFIG, 5, chunk_sleep=0)
+            workflow.run_single_workflow(self.artifacts, 'skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
         ledger = json.loads(self.artifacts['evidence_ledger_file'].read_text(encoding='utf-8'))
         statuses = [item.get('grounding', {}).get('status') for item in ledger['documents'][0]['events']]
         self.assertEqual(statuses, ['matched', 'unmatched', 'unmatched', 'unmatched'])
@@ -200,10 +202,10 @@ class GroundingPipelineTests(unittest.TestCase):
         with patch.object(llm_client, 'call_llm', return_value=json.dumps(payload)), \
              patch.object(workflow, 'generate_marked_report', side_effect=RuntimeError('stop final')):
             with self.assertRaisesRegex(RuntimeError, 'stop final'):
-                workflow.run_single_workflow(self.artifacts, 'skill', CONFIG, 5, chunk_sleep=0)
+                workflow.run_single_workflow(self.artifacts, 'skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
         run = next(self.artifacts['runs_dir'].iterdir())
         saved = (run / 'run_metadata.json').read_bytes()
-        paths = workflow.build_run_paths(self.artifacts, run.name)
+        paths = workflow_state.build_run_paths(self.artifacts, run.name)
         path = paths['evidence_dir'] / 'evidence_001.json'
         document = json.loads(path.read_text(encoding='utf-8'))
         document['events'][0]['grounding']['source_refs'][0]['start'] = 99
