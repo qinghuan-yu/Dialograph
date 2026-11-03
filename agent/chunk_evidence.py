@@ -226,8 +226,6 @@ def format_evidence_summary(evidence_docs: list[dict]) -> str:
             lines.append("- 暂无结构化条目。")
             continue
         for item in items:
-            chunk = item.get("chunk_index", "?")
-            chunk_label = f"chunk_{chunk:03d}" if isinstance(chunk, int) else f"chunk_{chunk}"
             time_range = item.get("time_range", {})
             time_label = item.get("time") or f"{time_range.get('start', '?')} ~ {time_range.get('end', '?')}"
             refs = item.get('grounding', {}).get('source_refs', [])
@@ -248,8 +246,7 @@ def format_evidence_summary(evidence_docs: list[dict]) -> str:
             suffix = f"；证据：{evidence}" if evidence else ""
             conf = f"；可信度：{confidence}" if confidence else ""
             evidence_id = item.get('evidence_id', '未核验旧条目')
-            location = f"；消息 {refs[0]['message_id']} / 原始序号 {refs[0]['original_index']}" if refs else ""
-            lines.append(f"- {evidence_id} / {chunk_label} / {time_label}: {desc}{suffix}{conf}{location}")
+            lines.append(f"- {evidence_id} / {time_label}: {desc}{suffix}{conf}")
     return "\n".join(lines)
 
 

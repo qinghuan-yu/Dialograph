@@ -19,6 +19,35 @@ from workflow_state import run_identity
 
 
 class AlphaOpaqueAttachmentTests(unittest.TestCase):
+    def test_contact_card_import_keeps_source_position_and_omits_contact_details(self):
+        from analysis_artifacts import build_artifacts
+        from web_app import WebService
+
+        fixture = Path(__file__).parent / 'fixtures' / 'alpha_smoke.md'
+        text = fixture.read_text(encoding='utf-8')
+        text += ('\n**self\\_test** · 2026-10-28 09:04:00 · 名片\n\n'
+                 '姓名：合成联系人\n微信号：wxid_synthetic_contact\n'
+                 '\n**合成对象** · 2026-10-28 09:05:00\n\n名片收到了\n')
+        raw = text.encode('utf-8')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            service = WebService(root)
+            imported = service.import_chat('contact-card.md', raw)
+            source = service.chat_path(imported['id'])
+            artifacts = build_artifacts(source, root / 'output', write_supporting_files=False)
+            self.assertEqual(source.read_bytes(), raw)
+        card, following = artifacts['messages'][-2:]
+        self.assertEqual(card['original_index'], 4)
+        self.assertEqual(card['sender'], 'me')
+        self.assertEqual(card['time_str'], '2026-10-28 09:04:00')
+        self.assertEqual(card['type'], '文件消息')
+        self.assertIn('原导出类型：名片', card['content'])
+        self.assertNotIn('合成联系人', card['content'])
+        self.assertNotIn('wxid_synthetic_contact', card['content'])
+        self.assertEqual(following['original_index'], 5)
+        self.assertEqual(following['content'], '名片收到了')
+        self.assertEqual(match_quote({'evidence': card['content']}, artifacts['messages'])['status'], 'unmatched')
+
     def test_known_opaque_types_keep_position_and_sender_without_importing_attachment_text(self):
         text = (Path(__file__).parent / 'fixtures' / 'alpha_smoke.md').read_text(encoding='utf-8')
         labels = ('聊天记录', '转账', '红包', '通话')

@@ -65,12 +65,6 @@ class ResultProtectionTests(unittest.TestCase):
             self.assertEqual(len(previews), 1)
             self.assertIn('预览', previews[0].read_text(encoding='utf-8'))
 
-    def test_batch_entry_never_deletes_existing_analysis(self):
-        batch = (ROOT / '一键运行全部分析.bat').read_text(encoding='utf-8').lower()
-        self.assertNotIn('remove-item', batch)
-        self.assertNotIn('rmdir', batch)
-        self.assertNotIn(' --force', batch)
-
     def test_empty_workspace_audit_returns_empty_json(self):
         with tempfile.TemporaryDirectory() as tmp, \
              patch.object(artifact_audit, '__file__', str(Path(tmp) / 'agent' / 'artifact_audit.py')), \

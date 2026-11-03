@@ -11,12 +11,14 @@ import tempfile
 import threading
 
 import evidence_store
+from report_references import ReferenceCatalog, REFERENCE_PATTERN
 
 
 class TaskEvidenceIndex:
     def __init__(self):
         self.lock = threading.Lock()
         self.ready = set()
+        self.catalogs = {}
 
     @staticmethod
     def revision(ledger, source, terms):
@@ -28,8 +30,15 @@ class TaskEvidenceIndex:
         return digest.hexdigest()
 
     def retrieve(self, ledger, cache_dir, source, terms, *, query=None, evidence_id=None,
-                 expected_revision=None, limit=5):
-        if evidence_id is None:
+                 expected_revision=None, limit=5, report=None, reference=None):
+        if reference is not None:
+            if (not isinstance(reference, str) or not re.fullmatch(REFERENCE_PATTERN, reference)
+                    or not isinstance(expected_revision, str) or not re.fullmatch(r'[0-9a-f]{64}', expected_revision)):
+                raise ValueError('引用编号或版本无效，请重新打开报告。')
+        elif report is not None:
+            if not isinstance(report, str):
+                raise ValueError('报告内容无效。')
+        elif evidence_id is None:
             if not isinstance(query, str) or not query.strip() or len(query) > 200:
                 raise ValueError('请输入 1 至 200 字的查询关键词。')
             if type(limit) is not int or not 1 <= limit <= 10:
@@ -39,27 +48,38 @@ class TaskEvidenceIndex:
             raise ValueError('证据编号或版本无效，请重新检索。')
         with self.lock:
             revision = self.revision(ledger, source, terms)
-            if evidence_id is not None and revision != expected_revision:
+            if (evidence_id is not None or reference is not None) and revision != expected_revision:
                 raise ValueError('当前任务的证据已更新，请重新检索后回查。')
             target = Path(cache_dir) / f'{revision}.sqlite3'
             try:
-                if target not in self.ready or not target.is_file():
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    with tempfile.TemporaryDirectory(prefix='.index-', dir=target.parent) as temporary:
-                        staged = Path(temporary) / 'index.sqlite3'
-                        evidence_store.ingest_ledger(ledger, staged, input_file=source, redaction_terms=terms)
+                if report is not None or reference is not None:
+                    if target not in self.catalogs:
+                        validated, _ = evidence_store._validated_ledger(ledger, input_file=source, redaction_terms=terms)
                         if self.revision(ledger, source, terms) != revision:
-                            raise ValueError('证据文件正在更新，请稍后重新检索。')
-                        os.replace(staged, target)
-                    self.ready.add(target)
-                if evidence_id is None:
-                    result = evidence_store.search_evidence(target, query, limit=limit)
+                            raise ValueError('证据文件正在更新，请稍后重新打开报告。')
+                        self.catalogs[target] = ReferenceCatalog(validated)
+                    catalog = self.catalogs[target]
+                    result = ({'references': catalog.describe_report(report)} if report is not None
+                              else {'reference': catalog.read(reference)})
                 else:
-                    item = evidence_store.get_evidence(target, evidence_id)
-                    if item is None:
-                        raise ValueError('未找到当前任务中的这条证据。')
-                    result = {'evidence': item}
+                    if target not in self.ready or not target.is_file():
+                        target.parent.mkdir(parents=True, exist_ok=True)
+                        with tempfile.TemporaryDirectory(prefix='.index-', dir=target.parent) as temporary:
+                            staged = Path(temporary) / 'index.sqlite3'
+                            evidence_store.ingest_ledger(ledger, staged, input_file=source, redaction_terms=terms)
+                            if self.revision(ledger, source, terms) != revision:
+                                raise ValueError('证据文件正在更新，请稍后重新检索。')
+                            os.replace(staged, target)
+                        self.ready.add(target)
+                    if evidence_id is None:
+                        result = evidence_store.search_evidence(target, query, limit=limit)
+                    else:
+                        item = evidence_store.get_evidence(target, evidence_id)
+                        if item is None:
+                            raise ValueError('未找到当前任务中的这条证据。')
+                        result = {'evidence': item}
                 if self.revision(ledger, source, terms) != revision:
+                    self.catalogs.pop(target, None)
                     raise ValueError('证据文件正在更新，请稍后重新检索。')
                 return {**result, 'ledger_revision': revision}
             except sqlite3.Error as exc:

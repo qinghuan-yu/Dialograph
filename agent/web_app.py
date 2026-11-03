@@ -288,6 +288,16 @@ class WebService:
     def show_evidence(self, job_id, evidence_id, revision):
         return self._retrieve_evidence(job_id, evidence_id=evidence_id, expected_revision=revision)
 
+    def show_reference(self, job_id, reference, revision):
+        return self._retrieve_evidence(job_id, reference=reference, expected_revision=revision)
+
+    def output_content(self, job_id, key):
+        file, item = self.output_path(job_id, key)
+        result = {'content': file.read_text(encoding='utf-8'), 'kind': item['kind'], 'name': file.name}
+        if key in ('analysis', 'persona'):
+            result['citations'] = self._retrieve_evidence(job_id, report=result['content'])
+        return result
+
 
 def make_handler(service, port):
     allowed_hosts = {f'127.0.0.1:{port}', f'localhost:{port}'}
@@ -343,7 +353,7 @@ def make_handler(service, port):
                     file, item = service.output_path(parts[2], parts[3])
                     if 'download' in parse_qs(parsed.query):
                         return self.send(200, file.read_bytes(), 'application/octet-stream', file.name)
-                    return self.send(200, {'content': file.read_text(encoding='utf-8'), 'kind': item['kind'], 'name': file.name})
+                    return self.send(200, service.output_content(parts[2], parts[3]))
                 static = {'/': ('index.html', 'text/html'), '/index.html': ('index.html', 'text/html'),
                           '/app.js': ('app.js', 'text/javascript'), '/styles.css': ('styles.css', 'text/css')}
                 if path in static:
@@ -380,6 +390,10 @@ def make_handler(service, port):
                     if set(data) - {'id', 'evidence_id', 'revision'}:
                         raise ValueError('回查请求包含不支持的参数。')
                     return self.send(200, service.show_evidence(data.get('id'), data.get('evidence_id'), data.get('revision')))
+                if path == '/api/evidence/reference':
+                    if set(data) - {'id', 'reference', 'revision'}:
+                        raise ValueError('引用请求包含不支持的参数。')
+                    return self.send(200, service.show_reference(data.get('id'), data.get('reference'), data.get('revision')))
                 self.send(404, {'error': '接口不存在。'})
             except (ValueError, OSError) as exc:
                 self.send(400, {'error': str(exc) if isinstance(exc, ValueError) else '无法保存本地文件。'})

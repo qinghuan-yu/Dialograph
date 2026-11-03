@@ -35,6 +35,7 @@
 - `evidence_grounding.py`：输入快照和消息编号、逐字引文绑定、歧义隔离、证据编号及独立重算校验，详见 [原文绑定说明](../docs/EVIDENCE_GROUNDING.md)。
 - `evidence_store.py`：校验 v2 脱敏账本，按快照隔离的 SQLite/FTS5 中文查询和来源回查，详见 [证据检索](../docs/EVIDENCE_RETRIEVAL.md)。
 - `web_evidence.py`：为网页已完成任务按需建立派生索引，核对实际输入快照及脱敏规则，并以版本约束查询和原文回查。
+- `report_references.py`：在已校验任务账本中解析报告引用，区分证据、单条消息和对话片段；唯一匹配的缩写可回查原文。
 - `privacy_redaction.py`：默认身份/格式化敏感信息替换、补充词、模型请求与返回值脱敏，以及任务上下文隔离，详见 [脱敏说明](../docs/PRIVACY_REDACTION.md)。
 
 两份 single-pass 入口只写 `analysis/预览/`，人物预览读取关系预览；文件头和控制台均标明预览。正式报告仍由完整工作流生成。
@@ -55,6 +56,4 @@
 
 - 项目根目录 `.env.example`：LLM API 配置模板；复制为本地 `.env` 后填写自己的配置。
 
-本轮可靠性范围、验证记录和后续边界见 [可靠性改进记录](../docs/RELIABILITY_PASS.md)。
-
-2026-10-30 的模块归属、保留入口的理由及验证结果见 [结构优化记录](../docs/STRUCTURE_REFACTOR.md)。CLI 命令和参数保持不变；内部调用使用 `ChunkSettings`，不再从 `chunk_pipeline` 导入已迁移的辅助函数。流程指纹已更新，不兼容旧缓存会按现有规则拒绝复用。
+内部调用使用 `ChunkSettings` 汇集分块配置，`PreparedRun` 汇集恢复预检结果。辅助函数从实际所属模块导入；运行缓存按输入、源码、提示词和模型指纹判断是否可复用。

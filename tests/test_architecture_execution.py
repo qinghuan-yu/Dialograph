@@ -28,7 +28,7 @@ KEYS = ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'un
 def synthetic_summaries():
     documents = []
     for index in range(1, 31):
-        item = {'evidence': f'原文{index}：' + '虚构内容用于测试。' * 15, 'confidence': 'medium'}
+        item = {'evidence_id': f'E_{index:032x}', 'evidence': f'原文{index}：' + '虚构内容用于测试。' * 15, 'confidence': 'medium'}
         documents.append({'chunk_index': index, 'parse_status': 'ok',
             'events': [dict(item, summary=f'事件{index}')],
             'relation_signals': [dict(item, model='模型', direction='mixed', signal=f'关系{index}')],
@@ -44,7 +44,7 @@ class BudgetTests(unittest.TestCase):
         prompt = report_generation.build_final_prompt('合成', 'stats', 'coverage', evidence, phases)
         self.assertIn('反证30', prompt)
         self.assertIn('疑问30', prompt)
-        self.assertIn('chunk_030', prompt)
+        self.assertIn(f'E_{30:032x}', prompt)
         self.assertIn('关系30', prompt)
         self.assertIn('人物30', prompt)
         self.assertLessEqual(len(prompt.encode('utf-8')), 30000)
@@ -68,7 +68,7 @@ class BudgetTests(unittest.TestCase):
             evidence, ['\n\n'.join(phases)], '关系报告' * 30000)
         self.assertLessEqual(len(prompt.encode('utf-8')), 40000)
         self.assertIn('反证30', prompt)
-        self.assertIn('chunk_030', prompt)
+        self.assertIn(f'E_{30:032x}', prompt)
 
 
 class RequestRecoveryTests(unittest.TestCase):
