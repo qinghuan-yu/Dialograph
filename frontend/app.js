@@ -14,6 +14,9 @@ function element(tag, text, className) {
   if (className) node.className = className;
   return node;
 }
+function statusBadge(text, status) {
+  const badge = element("span", text, "status-badge"); badge.dataset.status = status; return badge;
+}
 async function api(path, options = {}) {
   let response = await fetch(path, { ...options, headers: { "X-Dialograph-Token": state.token, ...options.headers } });
   if (response.status === 403 && path !== "/api/bootstrap") {
@@ -59,7 +62,9 @@ function renderHistory() {
   state.jobs.slice(0, 12).forEach(job => {
     const button = element("button", undefined, "history-item"); button.type = "button";
     button.setAttribute("aria-pressed", String(job.id === state.selected));
-    button.append(element("strong", job.name), element("small", `${job.mode === "full" ? "完整分析" : "预处理"} · ${labels[job.status]} · ${job.created.replace("T", " ")}`));
+    const meta = element("small", `${job.mode === "full" ? "完整分析" : "预处理"} · ${labels[job.status]} · ${job.created.replace("T", " ")}`);
+    meta.dataset.status = job.status;
+    button.append(element("strong", job.name), meta);
     button.addEventListener("click", () => selectJob(job.id)); list.append(button);
   });
 }
@@ -126,7 +131,7 @@ function renderJob(job) {
   const searchable = job.status === "completed" && job.mode === "full" && !!job.files?.evidence;
   if (state.evidence.job !== job.id || !searchable) resetEvidence(searchable ? job.id : null);
   $("#evidence-panel").hidden = !searchable;
-  $("#job-status").textContent = labels[job.status]; $("#job-name").textContent = job.name;
+  $("#job-status").textContent = labels[job.status]; $("#job-status").dataset.status = job.status; $("#job-name").textContent = job.name;
   $("#live-message").textContent = job.message || "正在启动…";
   $("#live-message").classList.toggle("error-text", job.status === "failed");
   $("#cancel-button").hidden = !active(job);
@@ -412,9 +417,9 @@ for (const [name, panel, focus] of [["stats", "stats-details", "stats-summary-ti
 async function init() {
   try {
     state.config = await api("/api/bootstrap"); state.token = state.config.token;
-    $("#model-name").textContent = state.config.model; $("#config-status").textContent = state.config.configured ? "已配置" : "未配置密钥";
+    $("#model-name").textContent = state.config.model; $("#config-status").replaceChildren(statusBadge(state.config.configured ? "已配置" : "未配置密钥", state.config.configured ? "ready" : "missing"));
     $("#config-hint").textContent = state.config.configured ? state.config.provider : "填写 .env 后可使用完整分析。";
     await loadFiles(); await refreshJobs(); poll();
-  } catch (_) { showError("#connection-error", "未连接到分析服务。请从项目根目录运行 python agent/web_app.py，再访问此页面。静态预览无法执行分析。"); $("#config-status").textContent = "未连接"; }
+  } catch (_) { showError("#connection-error", "未连接到分析服务。请从项目根目录运行 python agent/web_app.py，再访问此页面。静态预览无法执行分析。"); $("#config-status").replaceChildren(statusBadge("未连接", "offline")); }
 }
 init();
