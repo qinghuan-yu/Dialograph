@@ -8,10 +8,14 @@ const vm = require("node:vm");
 function harness() {
   const created = [], nodes = new Map(), downloads = [];
   class Node {
-    constructor(tag = "div") { this.tag = tag; this.children = []; this.text = ""; this.dataset = {}; this.attributes = {}; this.value = ""; this.isConnected = true; this.listeners = {}; this.classList = { toggle() {}, add() {}, remove() {} }; }
+    constructor(tag = "div") { this.tag = tag; this.children = []; this.text = ""; this.dataset = {}; this.attributes = {}; this.style = {}; this.value = ""; this.isConnected = true; this.listeners = {}; this.classList = { toggle() {}, add() {}, remove() {} }; this.scrollTop = 0; this.scrollHeight = 0; this.clientHeight = 0; }
     set textContent(value) { this.text = String(value); this.children = []; }
     get textContent() { return this.text + this.children.map(node => typeof node === "string" ? node : node.textContent).join(""); }
-    append(...children) { this.children.push(...children); }
+    append(...children) { children.forEach(child => { child.parentNode = this; }); this.children.push(...children); }
+    remove() { if (this.parentNode) this.parentNode.children = this.parentNode.children.filter(child => child !== this); }
+    getBoundingClientRect() { return { left: 20, right: 620, top: 20, bottom: 500 }; }
+    focus() { this.focused = true; }
+    scrollIntoView() { this.scrolled = true; }
     replaceChildren(...children) { this.text = ""; this.children = children; }
     setAttribute(name, value) { this.attributes[name] = value; }
     addEventListener(name, listener) { this.listeners[name] = listener; }
@@ -29,7 +33,9 @@ function harness() {
     URL: { createObjectURL: blob => { downloads.push(blob); return "blob:local-download"; }, revokeObjectURL() {} },
     localStorage: { getItem() {}, setItem() {} }, console,
   });
-  vm.runInContext(fs.readFileSync(path.join(__dirname, "../frontend/app.js"), "utf8"), context);
+  for (const file of ["report-markdown.js", "app.js"]) {
+    vm.runInContext(fs.readFileSync(path.join(__dirname, "../frontend", file), "utf8"), context);
+  }
   return { context, get, created, downloads, Node,
     run: code => vm.runInContext(code, context),
     reply: data => ({ ok: true, status: 200, json: async () => data }) };
@@ -127,7 +133,7 @@ test("Markdown 下载正文使用脚注，完整编号在文末去重保留", ()
   assert.ok(notes.includes(`[^e1]: \`${second}\``));
   assert.ok(notes.includes(`[^e2]: \`${first}\``));
   assert.equal(output.split(second).length - 1, 1);
-  assert.match(output, /END_FINAL_REPORT/);
+  assert.doesNotMatch(output, /END_FINAL_REPORT/);
   assert.equal(h.context.formatReportDownload("普通正文。"), "普通正文。");
 });
 
@@ -290,4 +296,88 @@ test("从阅读模式开始新任务时展开处理进度", () => {
   h.context.renderJob(job);
   assert.equal(h.get("#process-panel").open, true);
   assert.equal(h.get("#input-panel").open, false);
+});
+
+test("Markdown 分隔线独立成块，段落不跨越列表、引用和标题合并", () => {
+  const h = harness(), target = new h.Node();
+  h.context.renderMarkdown("前文\n---\n后文\n***\n1. 项目\n___\n> 引用\n# 标题\n结尾", target);
+  assert.deepEqual(target.children.map(n => n.tag), ["p", "hr", "p", "hr", "ol", "hr", "blockquote", "h1", "p"]);
+});
+
+test("表格中的转义竖线和代码竖线不分列，嵌套强调保留结构", () => {
+  const h = harness(), target = new h.Node();
+  h.context.renderMarkdown("| 内容 | 依据 |\n| --- | --- |\n| a\\|b | `x|y` |\n\n**粗体 *斜体* 【事实】 `代码`**", target);
+  assert.deepEqual(h.created.filter(n => n.tag === "td").map(n => n.textContent), ["a|b", "x|y"]);
+  const bold = h.created.find(n => n.tag === "strong");
+  assert.ok(bold.children.some(n => n.tag === "em" && n.textContent === "斜体"));
+  assert.ok(bold.children.some(n => n.tag === "code"));
+  assert.ok(bold.children.some(n => n.className?.includes("claim-label")));
+});
+
+test("引用弹窗仅在矩形外点击时关闭，关闭后恢复引用焦点", async () => {
+  const h = harness(), id = "E_" + "1".repeat(32);
+  h.context.renderMarkdown(`引用 ${id}`, new h.Node(), { references: { [id]: { status: "missing", kind: "evidence" } } });
+  const dialog = h.created.find(n => n.tag === "dialog"), button = h.created.find(n => n.className === "report-citation");
+  await button.click();
+  dialog.listeners.click?.({ target: dialog, clientX: 30, clientY: 30 });
+  assert.equal(dialog.open, true, "对话框内部留白不关闭");
+  dialog.listeners.click?.({ target: dialog, clientX: 5, clientY: 5 });
+  assert.equal(dialog.open, false, "点击背景关闭");
+  assert.equal(button.focused, true);
+});
+
+test("原文展开和收起按钮同步文案，来源序号直接显示", async () => {
+  const h = harness();
+  h.context.renderEvidenceResults(result("a".repeat(32)));
+  const button = h.created.find(n => n.tag === "button" && n.textContent === "回查原文");
+  const source = h.created.find(n => n.className === "evidence-source"); source.dataset.loaded = "true";
+  await button.click(); assert.equal(button.textContent, "收起原文");
+  await button.click(); assert.equal(button.textContent, "回查原文");
+  h.context.renderEvidenceSource({ occurrences: [{ source_refs: [{ sender: "me", time: "10:00", content: "正文", original_index: 3 }] }] }, source);
+  assert.match(source.textContent, /原始第 4 条/);
+  assert.equal(h.created.some(n => n.className === "source-location"), false);
+});
+
+test("运行记录保留已有节点，跟随末尾但不打断向上阅读", () => {
+  const h = harness(), job = { id: "logs-task", events: [{ time: "2026-11-04T10:00:00", message: "开始" }] };
+  const logs = h.get("#logs"); logs.clientHeight = 100; logs.scrollHeight = 300; logs.scrollTop = 200;
+  assert.equal(typeof h.context.renderLogs, "function");
+  h.context.renderLogs(job); const first = logs.children[0];
+  job.events.push({ time: "2026-11-04T10:00:01", message: "继续" });
+  logs.scrollHeight = 400; logs.scrollTop = 300;
+  h.context.renderLogs(job); assert.equal(logs.children[0], first); assert.equal(logs.scrollTop, 400);
+  logs.scrollTop = 30; job.events.push({ time: "2026-11-04T10:00:02", message: "完成" });
+  h.context.renderLogs(job); assert.equal(logs.scrollTop, 30);
+  const retained = logs.children[1]; job.events.shift();
+  h.context.renderLogs(job); assert.equal(logs.children[0], retained); assert.equal(logs.children.length, 2);
+});
+
+test("展开运行记录时可继续跟随末尾，也保留向上阅读的位置", () => {
+  const h = harness(), logs = h.get("#logs"), details = h.get("#log-details");
+  h.context.renderLogs({ id: "job", events: [{ time: "2026-11-04T10:00:00", message: "开始" }] });
+  logs.clientHeight = 100; logs.scrollHeight = 500; details.open = true;
+  details.listeners.toggle?.(); assert.equal(logs.scrollTop, 500);
+  logs.scrollTop = 50; logs.listeners.scroll?.();
+  details.listeners.toggle?.(); assert.equal(logs.scrollTop, 50);
+});
+
+test("Markdown 紧邻块边界与双向嵌套强调均正确结束", () => {
+  const h = harness(), target = new h.Node();
+  h.context.renderMarkdown("前文\n```\n代码\n```\n后文\n| 标题 |\n| --- |\n| 值 |\n尾段\n*斜体 **粗体***\n**粗体 *斜体***", target);
+  assert.deepEqual(target.children.map(n => n.tag), ["p", "pre", "p", "div", "p"]);
+  const outer = h.created.find(n => n.tag === "em");
+  assert.ok(outer.children.some(n => n.tag === "strong" && n.textContent === "粗体"));
+  assert.ok(h.created.some(n => n.tag === "strong" && n.children.some(c => c.tag === "em" && c.textContent === "斜体")));
+});
+
+test("月度图分开显示双方数量，快捷入口展开对应面板", () => {
+  const h = harness();
+  h.context.renderStats({ stats: { monthly_trend: [{ month: "2026-11", total: 10, my_count: 3, other_count: 7 }] } });
+  assert.equal(h.created.filter(n => n.tag === "meter").length, 0);
+  const bar = h.created.find(n => n.attributes.role === "img");
+  assert.match(bar?.attributes["aria-label"] || "", /我 3 条.*对方 7 条/);
+  assert.equal(bar.children.length, 2);
+  h.get("#jump-evidence").click();
+  assert.equal(h.get("#evidence-panel").open, true);
+  assert.equal(h.get("#evidence-query").focused, true);
 });

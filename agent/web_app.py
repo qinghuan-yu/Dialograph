@@ -355,7 +355,8 @@ def make_handler(service, port):
                         return self.send(200, file.read_bytes(), 'application/octet-stream', file.name)
                     return self.send(200, service.output_content(parts[2], parts[3]))
                 static = {'/': ('index.html', 'text/html'), '/index.html': ('index.html', 'text/html'),
-                          '/app.js': ('app.js', 'text/javascript'), '/styles.css': ('styles.css', 'text/css')}
+                          '/app.js': ('app.js', 'text/javascript'), '/styles.css': ('styles.css', 'text/css'),
+                          '/report-markdown.js': ('report-markdown.js', 'text/javascript')}
                 if path in static:
                     name, kind = static[path]
                     return self.send(200, (service.root / 'frontend' / name).read_bytes(), kind + '; charset=utf-8')

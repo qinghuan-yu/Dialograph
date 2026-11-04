@@ -47,6 +47,20 @@ class WebHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('GET', '/.env')[0], 404)
         self.assertEqual(self.request('GET', '/talks/private.json')[0], 404)
 
+    def test_frontend_modules_are_served_in_declared_order(self):
+        frontend = self.root / 'frontend'
+        frontend.mkdir()
+        source = Path(__file__).resolve().parents[1] / 'frontend'
+        for name in ('index.html', 'app.js', 'report-markdown.js', 'styles.css'):
+            raw = (source / name).read_bytes()
+            (frontend / name).write_bytes(raw)
+            code, content = self.request('GET', '/' + name)
+            self.assertEqual(code, 200, name)
+            self.assertEqual(content, raw)
+        html = (frontend / 'index.html').read_text(encoding='utf-8')
+        self.assertLess(html.index('./report-markdown.js'), html.index('./app.js'))
+        self.assertEqual(self.request('GET', '/report-markdown.js/../README.md')[0], 404)
+
     def test_import_preprocess_poll_and_download(self):
         fixture = Path(__file__).parent / 'fixtures' / 'web_smoke.json'
         self.assert_preprocess_upload('smoke.json', fixture.read_bytes(), 12)

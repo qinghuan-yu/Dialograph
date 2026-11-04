@@ -22,7 +22,7 @@ ALPHA_TYPES = {
     '表情': 'emoji', '语音': 'voice', '视频': 'video', '文件': 'file',
     '链接': 'link', '系统': 'system',
 }
-ALPHA_OPAQUE_TYPES = {'聊天记录', '转账', '红包', '通话', '名片'}
+ALPHA_OPAQUE_TYPES = {'聊天记录', '转账', '红包', '通话', '名片', '位置'}
 
 
 def conversation_files(directory: Path) -> list[Path]:
@@ -155,7 +155,7 @@ def parse_alpha_markdown(text):
             raise ValueError(f'Alpha 第 {index + 1} 条消息类型不支持：{label}。')
         content_end = headers[index + 1].start() if index + 1 < len(headers) else len(body)
         if label in ALPHA_OPAQUE_TYPES:
-            # 转发、交易、通话和名片附件只保留发生记录。
+            # 转发、交易、通话、名片和位置附件只保留发生记录。
             kind = 'file'
             content = f'[原导出类型：{label}；仅保留发生记录，附件内容未解析]'
         else:

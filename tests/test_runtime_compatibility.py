@@ -19,6 +19,51 @@ from workflow_state import run_identity
 
 
 class AlphaOpaqueAttachmentTests(unittest.TestCase):
+    def test_location_messages_pass_full_web_workflow_without_importing_coordinates(self):
+        from analysis_artifacts import build_artifacts
+        from web_app import WebService
+        from web_worker import run_job
+
+        text = (Path(__file__).parent / 'fixtures' / 'alpha_smoke.md').read_text(encoding='utf-8')
+        text += ('\n**self\\_test** · 2026-10-28 09:04:00 · 位置\n\n'
+                 '合成地址甲：纬度 31.123456 经度 121.654321\n'
+                 '\n**合成对象** · 2026-10-28 09:05:00 · 位置\n\n'
+                 '合成地址乙：纬度 32.123456 经度 122.654321\n'
+                 '\n**合成对象** · 2026-10-28 09:06:00\n\n收到位置\n')
+        raw = text.encode('utf-8')
+        config = SimpleNamespace(api_base='https://test.invalid', api_key='test-only', model='test')
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            service = WebService(root)
+            imported = service.import_chat('location.md', raw)
+            source = service.chat_path(imported['id'])
+            with patch('web_app.load_llm_config', return_value=config), patch('web_app.threading.Thread.start'):
+                job = service.start({'chat_id': imported['id'], 'mode': 'full'})
+            folder = service.jobs_dir / job['id']
+            self.assertEqual(source.read_bytes(), raw)
+            self.assertEqual((folder / 'input.md').read_bytes(), raw)
+            options = json.loads((folder / 'request.json').read_text(encoding='utf-8'))
+            artifacts = build_artifacts(source, root / 'check', write_supporting_files=False)
+            locations = artifacts['messages'][-3:-1]
+            self.assertEqual([m['original_index'] for m in locations], [4, 5])
+            self.assertEqual([m['sender'] for m in locations], ['me', 'other'])
+            self.assertEqual([m['time_str'] for m in locations], ['2026-10-28 09:04:00', '2026-10-28 09:05:00'])
+            for location in locations:
+                self.assertEqual(location['type'], '文件消息')
+                self.assertIn('原导出类型：位置', location['content'])
+                self.assertEqual(match_quote({'evidence': location['content']}, artifacts['messages'])['status'], 'unmatched')
+            chunk = json.dumps({key: [] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
+            responses = [chunk, '# 合成报告\n<!-- END_FINAL_REPORT -->', '# 合成侧写\n<!-- END_PERSONA_REPORT -->']
+            with patch('web_worker.load_llm_config', return_value=config), patch('llm_client.call_llm', side_effect=responses):
+                result = run_job(root, folder, options, lambda event: None)
+            self.assertEqual(result['stats']['total_messages'], 6)
+            self.assertEqual(len(result['files']), 9)
+            ledger = json.loads((folder / result['files']['evidence']['path']).read_text(encoding='utf-8'))
+            saved = json.dumps(ledger, ensure_ascii=False)
+            for private in ('合成地址甲', '合成地址乙', '31.123456', '121.654321', '32.123456', '122.654321'):
+                self.assertNotIn(private, saved)
+            self.assertEqual(ledger['source_messages'][-1]['content'], '收到位置')
+
     def test_contact_card_import_keeps_source_position_and_omits_contact_details(self):
         from analysis_artifacts import build_artifacts
         from web_app import WebService

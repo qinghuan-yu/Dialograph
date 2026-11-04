@@ -1,11 +1,12 @@
 "use strict";
 const $ = selector => document.querySelector(selector);
-const state = { token: "", config: null, jobs: [], selected: null, output: null, outputRequest: 0, submitting: false, readingJob: null, progressJob: null, setup: false,
+const state = { token: "", config: null, jobs: [], selected: null, output: null, outputRequest: 0, submitting: false, readingJob: null, progressJob: null,
   evidence: { job: null, request: 0, revision: null } };
 const labels = { queued: "等待启动", running: "正在运行", completed: "已完成", failed: "失败", cancelled: "已停止", interrupted: "已中断" };
 const stageOrder = ["prepare", "chunks", "merge", "analysis", "persona", "audit"];
 const active = job => job && ["queued", "running"].includes(job.status);
 let lastJobsSnapshot = "";
+let logView = { job: null, events: [], follow: true };
 
 function element(tag, text, className) {
   const node = document.createElement(tag);
@@ -72,10 +73,14 @@ function renderStats(job) {
   const monthly = (stats.monthly_trend || []).slice(-12), max = Math.max(1, ...monthly.map(month => month.total));
   const chart = $("#monthly-chart"); chart.replaceChildren();
   monthly.forEach(month => {
-    const row = element("div", undefined, "month-row"), meter = element("meter");
-    meter.min = 0; meter.max = max; meter.value = month.total;
-    meter.setAttribute("aria-label", `${month.month}，我 ${month.my_count} 条，对方 ${month.other_count} 条，总计 ${month.total} 条`);
-    row.append(element("span", month.month), meter, element("span", `${month.my_count} / ${month.other_count}`)); chart.append(row);
+    const row = element("div", undefined, "month-row"), bar = element("div", undefined, "month-bar");
+    bar.setAttribute("role", "img");
+    bar.setAttribute("aria-label", `${month.month}，我 ${month.my_count} 条，对方 ${month.other_count} 条，总计 ${month.total} 条`);
+    for (const [kind, count] of [["me", month.my_count], ["other", month.other_count]]) {
+      const segment = element("span", undefined, `month-${kind}`);
+      segment.style.width = `${count / max * 100}%`; bar.append(segment);
+    }
+    row.append(element("span", month.month), bar, element("span", `${month.my_count} / ${month.other_count}`)); chart.append(row);
   });
   const diagnostics = job.diagnostics || {};
   const notes = [`${stats.first_date} 至 ${stats.last_date}`];
@@ -84,10 +89,32 @@ function renderStats(job) {
   if (diagnostics.invalid_timestamp_message_count) notes.push(`时间戳异常 ${diagnostics.invalid_timestamp_message_count} 条`);
   $("#diagnostic-summary").textContent = notes.join(" · ");
 }
+function renderLogs(job) {
+  const logs = $("#logs"), events = job.events || [];
+  const changedJob = logView.job !== job.id;
+  const follow = changedJob || logs.scrollHeight - logs.scrollTop - logs.clientHeight <= 24;
+  // 保留重叠事件节点；服务端截去较早记录后，向上阅读仍保持同一条记录的位置。
+  const key = event => JSON.stringify([event.time, event.message]);
+  const keys = events.map(key), previous = logView.events;
+  let offset = changedJob ? -1 : previous.findIndex((value, index) =>
+    value === keys[0] && previous.slice(index).every((item, n) => item === keys[n]));
+  let kept = 0;
+  if (offset >= 0) {
+    const anchor = logs.children[offset], top = anchor?.getBoundingClientRect().top;
+    for (let index = 0; index < offset; index += 1) logs.children[0].remove();
+    if (!follow && anchor) logs.scrollTop += anchor.getBoundingClientRect().top - top;
+    kept = previous.length - offset;
+  } else logs.replaceChildren();
+  events.slice(kept).forEach(event => {
+    const row = element("li"); row.append(element("time", event.time.slice(11)), document.createTextNode(event.message)); logs.append(row);
+  });
+  logView = { job: job.id, events: keys, follow };
+  $("#log-count").textContent = events.length;
+  if (follow) logs.scrollTop = logs.scrollHeight;
+}
 function renderJob(job) {
   if (!job) return;
   const reading = job.status === "completed" && job.mode === "full";
-  document.body.classList.toggle("reading-mode", reading && !state.setup);
   if (reading && state.readingJob !== job.id) {
     $("#input-panel").open = false; $("#process-panel").open = false; $("#stats-details").open = false; state.readingJob = job.id;
   }
@@ -119,9 +146,7 @@ function renderJob(job) {
   $("#chunk-label").textContent = job.stage === "chunks" ? `当前分块 ${job.current} / ${job.total}` : "分块处理";
   $("#chunk-count").textContent = `已完成 ${chunksDone || 0} / ${job.total || 0}`;
   $("#chunk-meter").max = job.total || 1; $("#chunk-meter").value = chunksDone || 0;
-  const logs = $("#logs"); logs.replaceChildren();
-  (job.events || []).forEach(event => { const row = element("li"); row.append(element("time", event.time.slice(11)), document.createTextNode(event.message)); logs.append(row); });
-  $("#log-count").textContent = job.events?.length || 0;
+  renderLogs(job);
   renderStats(job);
   const files = Object.entries(job.files || {});
   $("#result-label").textContent = job.status === "completed" ? `${files.length} 份输出` : job.stats ? "统计已就绪" : "等待分析";
@@ -138,11 +163,15 @@ function renderJob(job) {
     button.addEventListener("click", () => downloadOutput(key)); attachments.append(button);
   });
   $("#attachments").hidden = !attachments.children.length;
+  $("#results-quick-links").hidden = !job.stats && !reports.length;
+  $("#jump-stats").hidden = !job.stats;
+  $("#jump-evidence").hidden = !searchable;
+  $("#jump-attachments").hidden = !attachments.children.length;
   if (reports.length && !state.output) loadOutput(reports[0][0]);
 }
 function selectJob(id) {
   if (state.selected !== id) {
-    state.selected = id; state.output = null; state.outputRequest += 1; state.setup = false; state.readingJob = null;
+    state.selected = id; state.output = null; state.outputRequest += 1; state.readingJob = null;
     resetEvidence(id);
     $("#report-content").replaceChildren(); showError("#report-error", null);
     try { localStorage.setItem("dialograph-job", id); } catch (_) { /* 私密模式可不保存选择。 */ }
@@ -202,6 +231,7 @@ function renderEvidenceResults(data) {
         button.type = "button"; button.setAttribute("aria-expanded", "false"); source.hidden = true;
         button.addEventListener("click", async () => {
           source.hidden = !source.hidden; button.setAttribute("aria-expanded", String(!source.hidden));
+          button.textContent = source.hidden ? "回查原文" : "收起原文";
           if (!source.hidden && !source.dataset.loaded) {
             button.disabled = true;
             try { await loadEvidenceSource(row, source); } finally { button.disabled = false; }
@@ -220,13 +250,12 @@ function renderEvidenceSource(item, container) {
   for (const occurrence of item.occurrences || []) {
     for (const ref of occurrence.source_refs || []) {
       const source = element("div"), text = element("p", undefined, "source-message");
-      source.append(element("p", `${ref.sender === "me" ? "我" : ref.sender === "other" ? "对方" : ref.sender} · ${ref.time}`, "evidence-meta"));
+      source.append(element("p", `${ref.sender === "me" ? "我" : ref.sender === "other" ? "对方" : ref.sender} · ${ref.time} · 原始第 ${ref.original_index + 1} 条`, "evidence-meta"));
       // 后端位置以 Unicode 字符计数，避免表情符号导致高亮错位。
       const chars = Array.from(ref.content);
       if (ref.end > ref.start) text.append(document.createTextNode(chars.slice(0, ref.start).join("")), element("mark", chars.slice(ref.start, ref.end).join("")), document.createTextNode(chars.slice(ref.end).join("")));
       else text.textContent = ref.content;
-      const location = element("details", undefined, "source-location"); location.append(element("summary", "来源位置"), element("p", `原始第 ${ref.original_index + 1} 条`));
-      source.append(text, location); container.append(source);
+      source.append(text); container.append(source);
     }
   }
 }
@@ -242,49 +271,27 @@ async function loadEvidenceSource(row, container) {
     if (evidenceRequestCurrent(job, request) && container.isConnected) container.textContent = error.message || "回查失败，请重试。";
   }
 }
-function reportBody(text) {
-  let introduction = true;
-  return text.split(/\n\s*\n/).filter(block => {
-    if (/^##\s/.test(block.trim())) introduction = false;
-    return !introduction || !/^(?:>\s*)?(?:\*\*)?(?:来源说明|重要声明|方法说明)(?:[：:]|\*\*[：:])/.test(block.trim());
-  }).join("\n\n");
-}
-function reportCitationData(text, metadata = {}) {
-  const ids = [], entries = [], numbers = new Map();
-  const token = "(?:[EM]_[0-9a-f]{8,32}(?:…|\\.{3})?|chunk_\\d{1,6})";
-  const pattern = new RegExp("`(" + token + ")`|(?<!\\w)" + token + "(?!\\w)", "g");
-  let fence = null;
-  const content = text.split(/(<!--[\s\S]*?-->|\r?\n)/).map(line => {
-    if (line.startsWith("<!--")) return line;
-    const marker = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (marker) { fence = fence === marker[1][0] ? null : fence || marker[1][0]; return line; }
-    if (fence) return line;
-    return line.replace(/chunk_\d{1,6}(?:\/\d{1,6})+/g, group => group.replaceAll("/", "/chunk_")).replace(pattern, (match, quoted) => {
-      const raw = quoted || match;
-      const description = metadata.references?.[raw] || { kind: "evidence", canonical: raw, status: /^E_[0-9a-f]{32}$/.test(raw) ? "resolved" : "missing" };
-      const id = description.canonical || raw, key = `${description.kind}:${id}`;
-      if (!numbers.has(key)) { ids.push(id); entries.push(description); numbers.set(key, ids.length); }
-      return `[^e${numbers.get(key)}]`;
-    });
-  }).join("");
-  return { content, ids, entries };
+function renderMarkdown(text, container, metadata = {}) {
+  ReportMarkdown.render(text, container, metadata, createReportCitations);
 }
 function formatReportDownload(text, metadata = {}) {
-  const { content, ids, entries } = reportCitationData(reportBody(text), metadata);
-  if (!ids.length) return content;
-  return content.trimEnd() + "\n\n## 引用证据\n\n" + ids.map((id, index) => {
-    const entry = entries[index], label = entry.status !== "resolved" ? `待核对：${id}` : entry.kind === "chunk" ? `对话片段 ${Number(id.slice(6))}` : id;
-    return `[^e${index + 1}]: \`${label}\``;
-  }).join("\n") + "\n";
+  return ReportMarkdown.formatDownload(text, metadata);
 }
 function createReportCitations(ids, entries, metadata, container) {
   const dialog = element("dialog", undefined, "citation-dialog"), header = element("div", undefined, "citation-header");
-  const title = element("h3", "引用原文"), close = element("button", "关闭", "text-button");
+  const title = element("h3", "引用原文"), close = element("button", "关闭 ×", "outline-button");
   const source = element("div", undefined, "evidence-source");
-  dialog.setAttribute("aria-label", "引用证据"); close.type = "button";
+  title.id = "citation-title"; dialog.setAttribute("aria-labelledby", title.id);
+  close.type = "button"; close.setAttribute("aria-label", "关闭引用原文");
   const context = { ids, entries, revision: metadata.ledger_revision, dialog, title, source, job: state.selected, report: state.outputRequest, sequence: 0 };
   close.addEventListener("click", () => dialog.close());
-  dialog.addEventListener("close", () => { context.sequence += 1; });
+  context.open = (number, trigger) => { context.trigger = trigger; return openReportCitation(number, context); };
+  dialog.addEventListener("close", () => { context.sequence += 1; context.trigger?.focus(); });
+  dialog.addEventListener("click", event => {
+    if (event.target !== dialog) return;
+    const rect = dialog.getBoundingClientRect();
+    if (event.clientX < rect.left || event.clientX > rect.right || event.clientY < rect.top || event.clientY > rect.bottom) dialog.close();
+  });
   header.append(title, close); dialog.append(header, source); container.append(dialog);
   return context;
 }
@@ -295,6 +302,7 @@ async function openReportCitation(number, context) {
   const current = () => job === state.selected && report === state.outputRequest && sequence === context.sequence && dialog.open && source.isConnected;
   context.title.textContent = `${({ evidence: "证据", message: "消息", chunk: "对话片段" })[entry.kind]} ${number} · 原文`;
   source.textContent = "正在回查原文…";
+  source.scrollTop = 0;
   if (!dialog.open) dialog.showModal();
   if (entry.status !== "resolved") { source.textContent = "未找到可唯一定位的来源，这条引用待核对。"; return; }
   try {
@@ -308,84 +316,6 @@ async function openReportCitation(number, context) {
     }
     renderEvidenceSource(row, source);
   } catch (error) { if (current()) source.textContent = error.message || "回查失败，请重试。"; }
-}
-function appendReportText(node, text, citations) {
-  text.split(/(\[\^e\d+\])/g).forEach(part => {
-    const match = /^\[\^e(\d+)\]$/.exec(part), number = match ? Number(match[1]) : 0;
-    if (citations && number > 0 && number <= citations.ids.length) {
-      const button = element("button", `[${number}]`, "report-citation");
-      button.type = "button"; button.setAttribute("aria-label", `查看引用 ${number} 原文`); button.setAttribute("aria-haspopup", "dialog");
-      button.addEventListener("click", () => openReportCitation(number, citations)); node.append(button);
-    } else node.append(document.createTextNode(part));
-  });
-}
-// 仅渲染安全文本，不执行报告中的 HTML 或加载外部资源。
-function inlineText(node, text, citations) {
-  text.split(/(\*\*[^*]+\*\*|`[^`]+`|\*[^*\n]+\*|【(?:事实|推断|假设|存疑)(?:[+＋\/／、](?:事实|推断|假设|存疑))*】)/g).forEach(part => {
-    if (part.startsWith("**") && part.endsWith("**")) { const strong = element("strong"); inlineText(strong, part.slice(2, -2), citations); node.append(strong); }
-    else if (part.startsWith("`") && part.endsWith("`")) { const code = element("code"); appendReportText(code, part.slice(1, -1), citations); node.append(code); }
-    else if (part.startsWith("*") && part.endsWith("*")) { const emphasis = element("em"); appendReportText(emphasis, part.slice(1, -1), citations); node.append(emphasis); }
-    else if (/^【.+】$/.test(part)) {
-      const label = part.slice(1, -1), kind = ({ 事实: "fact", 推断: "inference", 假设: "hypothesis", 存疑: "uncertainty" })[label.split(/[+＋\/／、]/)[0]];
-      node.append(element("span", label, `claim-label claim-${kind}`));
-    }
-    else appendReportText(node, part, citations);
-  });
-}
-function renderMarkdown(text, container, metadata = {}) {
-  const { content, ids, entries } = reportCitationData(reportBody(text).replace(/<!--[\s\S]*?-->/g, ""), metadata);
-  const citations = ids.length ? createReportCitations(ids, entries, metadata, container) : null;
-  const lines = content.split(/\r?\n/);
-  let code = null, fence = null, quote = null, paragraph = null, lists = [];
-  const tableLine = line => /^\s*\|.*\|\s*$/.test(line);
-  const tableRow = (line, heading) => {
-    const row = element("tr");
-    line.trim().slice(1, -1).split("|").forEach(cell => {
-      const node = element(heading ? "th" : "td");
-      if (heading) node.setAttribute("scope", "col");
-      inlineText(node, cell.trim(), citations); row.append(node);
-    });
-    return row;
-  };
-  for (let index = 0; index < lines.length; index += 1) {
-    const line = lines[index], marker = /^\s*(`{3,}|~{3,})/.exec(line);
-    if (code) {
-      if (marker && marker[1][0] === fence[0] && marker[1].length >= fence.length) { code = null; fence = null; }
-      else code.textContent += line + "\n";
-      continue;
-    }
-    if (marker) { code = element("pre", ""); fence = marker[1]; container.append(code); lists = []; quote = paragraph = null; continue; }
-    if (!line.trim()) { quote = paragraph = null; continue; }
-    if (tableLine(line) && /^\s*\|[\s:|\-]+\|\s*$/.test(lines[index + 1] || "")) {
-      const wrap = element("div", undefined, "table-wrap"), table = element("table"), head = element("thead"), body = element("tbody");
-      head.append(tableRow(line, true)); index += 1;
-      while (index + 1 < lines.length && tableLine(lines[index + 1])) body.append(tableRow(lines[++index], false));
-      table.append(head, body); wrap.append(table); container.append(wrap); lists = []; quote = paragraph = null; continue;
-    }
-    const item = /^(\s*)([-+*]|\d+[.)])\s+(.*)/.exec(line);
-    if (item) {
-      const indent = item[1].replace(/\t/g, "    ").length, tag = /^\d/.test(item[2]) ? "ol" : "ul";
-      while (lists.length && (indent < lists.at(-1).indent || (indent === lists.at(-1).indent && tag !== lists.at(-1).tag))) lists.pop();
-      if (!lists.length || indent > lists.at(-1).indent) {
-        const list = element(tag);
-        if (tag === "ol") list.setAttribute("start", String(parseInt(item[2], 10)));
-        (lists.length ? lists.at(-1).last : container).append(list); lists.push({ indent, tag, list, last: null });
-      }
-      const node = element("li"); inlineText(node, item[3], citations); lists.at(-1).list.append(node); lists.at(-1).last = node; quote = paragraph = null; continue;
-    }
-    lists = [];
-    const heading = /^(#{1,6})\s+(.*)/.exec(line);
-    if (heading) { const node = element(`h${heading[1].length}`); inlineText(node, heading[2], citations); container.append(node); quote = paragraph = null; }
-    else if (/^\s*>/.test(line)) {
-      if (!quote) { quote = element("blockquote"); container.append(quote); }
-      else quote.append(element("br"));
-      inlineText(quote, line.replace(/^\s*>\s?/, ""), citations); paragraph = null;
-    } else {
-      if (!paragraph) { paragraph = element("p"); container.append(paragraph); }
-      else paragraph.append(document.createTextNode(" "));
-      inlineText(paragraph, line, citations); quote = null;
-    }
-  }
 }
 async function loadOutput(key) {
   state.output = key;
@@ -453,6 +383,13 @@ $("#retry-button").addEventListener("click", async () => {
   finally { $("#retry-button").disabled = false; renderJob(state.jobs.find(job => job.id === state.selected)); }
 });
 $("#evidence-form").addEventListener("submit", event => { event.preventDefault(); searchEvidence(); });
+$("#logs").addEventListener("scroll", () => {
+  const logs = $("#logs");
+  logView.follow = logs.scrollHeight - logs.scrollTop - logs.clientHeight <= 24;
+});
+$("#log-details").addEventListener("toggle", () => {
+  if ($("#log-details").open && logView.follow) $("#logs").scrollTop = $("#logs").scrollHeight;
+});
 async function downloadOutput(key) {
   try {
     const output = await api(`/api/outputs/${state.selected}/${key}`);
@@ -463,9 +400,15 @@ async function downloadOutput(key) {
 }
 $("#download-button").addEventListener("click", () => downloadOutput(state.output));
 $("#new-analysis").addEventListener("click", () => {
-  state.setup = true; document.body.classList.remove("reading-mode"); $("#input-panel").open = true;
+  $("#input-panel").open = true;
   $("#input-panel").scrollIntoView({ block: "start" }); $("#conversation").focus();
 });
+for (const [name, panel, focus] of [["stats", "stats-details", "stats-summary-title"], ["evidence", "evidence-panel", "evidence-query"], ["attachments", "attachments", null]]) {
+  $("#jump-" + name).addEventListener("click", () => {
+    const target = $("#" + panel); target.open = true; target.scrollIntoView({ block: "start" });
+    if (focus) $("#" + focus).focus({ preventScroll: true });
+  });
+}
 async function init() {
   try {
     state.config = await api("/api/bootstrap"); state.token = state.config.token;
