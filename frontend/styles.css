@@ -37,7 +37,7 @@
 /* 基础 */
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html { scroll-behavior: smooth; }
+html { scroll-behavior: smooth; scrollbar-gutter: stable; }
 body { margin: 0; background: var(--bg); color: var(--text); font: var(--fw-body) var(--fs-md)/1.6 var(--ui); }
 button, input, select, textarea { font: inherit; color: inherit; }
 button { cursor: pointer; border-radius: var(--radius); }
@@ -306,7 +306,8 @@ progress::-moz-progress-bar { background: var(--accent); }
   .advanced-fields { grid-template-columns: 1fr; gap: var(--sp-3); }
 }
 /* 新内容（报告、检索结果、原文）出现时淡入 */
-.report-content > *, .evidence-group, .evidence-source > *, .monthly-chart, .log-details li:last-child { animation: fade-up var(--dur) var(--ease) both; }
+.report-content > * { animation: fade-in var(--dur) var(--ease) both; }
+.evidence-group, .evidence-source > *, .monthly-chart, .log-details li:last-child { animation: fade-up var(--dur) var(--ease) both; }
 .stages li.active .stage-mark { display: inline-flex; align-items: center; gap: var(--sp-2); }
 .stages li.active .stage-mark::after { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; }
 @keyframes reveal { from { opacity: 0; transform: translateY(-4px); } }

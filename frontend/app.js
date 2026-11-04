@@ -323,10 +323,14 @@ async function openReportCitation(number, context) {
   } catch (error) { if (current()) source.textContent = error.message || "回查失败，请重试。"; }
 }
 async function loadOutput(key) {
+  const content = $("#report-content");
+  if (state.output === key && !$("#download-button").disabled && content.children.length) return;
   state.output = key;
   const id = state.selected, request = ++state.outputRequest;
   document.querySelectorAll("[data-output]").forEach(button => button.setAttribute("aria-pressed", String(button.dataset.output === key)));
-  const content = $("#report-content"); content.textContent = "正在读取结果…";
+  // 切换期间保留已显示的报告，避免页面高度骤降引发滚动跳动。
+  content.setAttribute("aria-busy", "true");
+  if (!content.children.length) content.textContent = "正在读取结果…";
   $("#download-button").disabled = true; showError("#report-error", null);
   try {
     const output = await api(`/api/outputs/${id}/${key}`);
@@ -336,6 +340,7 @@ async function loadOutput(key) {
     else content.append(element("pre", output.kind === "json" ? JSON.stringify(JSON.parse(output.content), null, 2) : output.content));
     $("#download-button").disabled = false;
   } catch (error) { if (request !== state.outputRequest) return; content.replaceChildren(); showError("#report-error", error); }
+  finally { if (request === state.outputRequest) content.setAttribute("aria-busy", "false"); }
 }
 async function refreshJobs() {
   state.jobs = await api("/api/jobs");

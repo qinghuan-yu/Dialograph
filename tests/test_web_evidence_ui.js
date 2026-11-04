@@ -47,6 +47,52 @@ function result(job, revision = "r1", label = "合成证据") {
       payload: { summary: label }, quote: "原文", occurrences: [] }], counter: [], mixed: [], uncertainty: [] } };
 }
 
+test("切换报告读取期间保留原文布局，新报告就绪后再替换", async () => {
+  const h = harness(), content = h.get("#report-content"), old = new h.Node("p");
+  old.textContent = "原报告正文"; content.append(old);
+  h.run("state.selected = 'task'; state.output = 'analysis';");
+  let finish;
+  h.context.fetch = () => new Promise(resolve => { finish = resolve; });
+  const pending = h.context.loadOutput("persona");
+  assert.equal(content.children[0], old, "请求等待期间不能清空长报告，避免页面高度骤降");
+  assert.equal(content.attributes["aria-busy"], "true");
+  finish(h.reply({ kind: "markdown", content: "# 新侧写\n\n新报告正文" }));
+  await pending;
+  assert.match(content.textContent, /新侧写.*新报告正文/);
+  assert.doesNotMatch(content.textContent, /原报告正文/);
+  assert.equal(content.attributes["aria-busy"], "false");
+});
+
+test("快速切换报告时只展示最后一次结果，旧响应不结束新请求的加载状态", async () => {
+  const h = harness(), content = h.get("#report-content"), replies = [];
+  content.append(new h.Node("p"));
+  h.run("state.selected = 'task'; state.output = 'analysis';");
+  h.context.fetch = () => new Promise(resolve => replies.push(resolve));
+  const first = h.context.loadOutput("persona"), second = h.context.loadOutput("analysis");
+  replies[0](h.reply({ kind: "markdown", content: "旧侧写" })); await first;
+  assert.equal(content.attributes["aria-busy"], "true");
+  assert.doesNotMatch(content.textContent, /旧侧写/);
+  replies[1](h.reply({ kind: "markdown", content: "最新关系报告" })); await second;
+  assert.match(content.textContent, /最新关系报告/);
+  assert.equal(content.attributes["aria-busy"], "false");
+});
+
+test("重复点击当前已显示报告时不重载，失败后可以重试并结束加载状态", async () => {
+  const h = harness(), content = h.get("#report-content");
+  content.append(new h.Node("p")); h.get("#download-button").disabled = false;
+  h.run("state.selected = 'task'; state.output = 'analysis';");
+  h.context.fetch = () => { throw new Error("不应重载当前报告"); };
+  await h.context.loadOutput("analysis");
+  assert.equal(h.get("#report-error").textContent, "");
+  h.context.fetch = async () => ({ ok: false, status: 400, json: async () => ({ error: "合成读取错误" }) });
+  await h.context.loadOutput("persona");
+  assert.equal(content.attributes["aria-busy"], "false");
+  assert.match(h.get("#report-error").textContent, /合成读取错误/);
+  h.context.fetch = async () => h.reply({ kind: "markdown", content: "重试成功" });
+  await h.context.loadOutput("persona");
+  assert.match(content.textContent, /重试成功/);
+});
+
 test("切换任务后，旧检索响应不能覆盖新任务", async () => {
   const h = harness(), id = "a".repeat(32);
   assert.equal(typeof h.context.searchEvidence, "function");
