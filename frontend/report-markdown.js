@@ -63,9 +63,9 @@ function inlineText(node, text, citations) {
     if (code) {
       flush(); const span = element("code"); appendReportText(span, code[2], citations); node.append(span); index += code[0].length; continue;
     }
-    const label = /^【((?:事实|推断|假设|存疑)(?:[+＋\/／、](?:事实|推断|假设|存疑))*)】/.exec(remaining);
+    const label = /^【((?:原话概括|事实|推断|假设|存疑)(?:[+＋\/／、](?:原话概括|事实|推断|假设|存疑))*)】/.exec(remaining);
     if (label) {
-      flush(); const kind = ({ 事实: "fact", 推断: "inference", 假设: "hypothesis", 存疑: "uncertainty" })[label[1].split(/[+＋\/／、]/)[0]];
+      flush(); const kind = ({ 原话概括: "fact", 事实: "fact", 推断: "inference", 假设: "hypothesis", 存疑: "uncertainty" })[label[1].split(/[+＋\/／、]/)[0]];
       node.append(element("span", label[1], `claim-label claim-${kind}`)); index += label[0].length; continue;
     }
     const delimiter = remaining.startsWith("**") ? "**" : remaining.startsWith("*") ? "*" : null;

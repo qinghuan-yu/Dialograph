@@ -1,4 +1,5 @@
 """实测问题回归：全部使用虚构导出与替代 HTTP 响应。"""
+from claim_fixtures import claim_response, with_reviews
 import io
 import json
 import os
@@ -19,6 +20,66 @@ from workflow_state import run_identity
 
 
 class AlphaOpaqueAttachmentTests(unittest.TestCase):
+    def test_empty_alpha_text_and_quote_keep_occurrence_without_becoming_literal_evidence(self):
+        from analysis_artifacts import build_artifacts
+        from web_app import WebService
+
+        fixture = (Path(__file__).parent / 'fixtures' / 'alpha_smoke.md').read_text(encoding='utf-8')
+        for label in ('', ' · 文本', ' · 引用'):
+            with self.subTest(label=label), tempfile.TemporaryDirectory() as tmp:
+                raw = (fixture + f'\n**self\\_test** · 2026-10-28 09:04:00{label}\n\n \t\u3000\n'
+                       '\n**合成对象** · 2026-10-28 09:05:00\n\n后续正文\n').encode('utf-8')
+                service = WebService(Path(tmp))
+                imported = service.import_chat('empty.md', raw)
+                source = service.chat_path(imported['id'])
+                self.assertEqual(source.read_bytes(), raw)
+                normalized = parse_alpha_markdown(raw.decode('utf-8'))
+                self.assertEqual(normalized['messages'][-2]['source_message_id'], 'alpha:5')
+                artifacts = build_artifacts(source, Path(tmp) / 'output', write_supporting_files=False)
+                empty, following = artifacts['messages'][-2:]
+                self.assertEqual(empty['original_index'], 4)
+                self.assertEqual(empty['sender'], 'me')
+                self.assertEqual(empty['time_str'], '2026-10-28 09:04:00')
+                self.assertEqual(empty['type'], '文件消息')
+                self.assertIn('导出正文为空', empty['content'])
+                self.assertEqual(match_quote({'evidence': empty['content']}, artifacts['messages'])['status'], 'unmatched')
+                self.assertEqual(following['original_index'], 5)
+                self.assertEqual(following['content'], '后续正文')
+
+    def test_other_and_future_types_keep_occurrence_without_importing_body(self):
+        fixture = (Path(__file__).parent / 'fixtures' / 'alpha_smoke.md').read_text(encoding='utf-8')
+        for label in ('其他', '小程序', '视频号', '音乐', '实时位置', '实况照片',
+                      '群公告', '收藏笔记', '拍一拍', '未来扩展类型-v2'):
+            with self.subTest(label=label):
+                text = fixture + (
+                    f'\n**self\\_test** · 2026-10-28 09:04:00 · {label}\n\n'
+                    '<appmsg>附件内第三人原话</appmsg>\n'
+                    '\n**合成对象** · 2026-10-28 09:05:00\n\n后续正文\n')
+                normalized = parse_alpha_markdown(text)
+                opaque = normalized['messages'][-2]
+                self.assertEqual(opaque['source_message_id'], 'alpha:5')
+                self.assertEqual(opaque['isSend'], 1)
+                self.assertEqual(opaque['formattedTime'], '2026-10-28 09:04:00')
+                self.assertEqual(opaque['type'], '文件消息')
+                self.assertIn(f'原导出类型：{label}', opaque['content'])
+                self.assertNotIn('附件内第三人原话', str(normalized))
+                parsed = parse_chat_messages(normalized['messages'])['messages']
+                self.assertEqual(parsed[-2]['original_index'], 4)
+                self.assertEqual(parsed[-2]['sender'], 'me')
+                self.assertEqual(parsed[-1]['content'], '后续正文')
+                self.assertEqual(match_quote({'evidence': opaque['content']}, parsed)['status'], 'unmatched')
+
+    def test_weflow_native_export_labels_are_accepted_without_numeric_type_guessing(self):
+        from conversation_formats import normalize_conversation
+
+        labels = ('文本消息', '图片消息', '语音消息', '名片消息', '视频消息', '动画表情',
+                  '位置消息', '链接消息', '通话消息', '系统消息', '引用消息', '音乐消息',
+                  '群公告', '转账消息', '文件消息', '聊天记录', '小程序消息', '其他消息')
+        data = {'messages': [
+            {'type': label, 'content': '合成导出说明', 'isSend': 1,
+             'formattedTime': '2026-10-28 09:00:00'} for label in labels]}
+        self.assertEqual(normalize_conversation(data), data)
+
     def test_location_messages_pass_full_web_workflow_without_importing_coordinates(self):
         from analysis_artifacts import build_artifacts
         from web_app import WebService
@@ -53,11 +114,11 @@ class AlphaOpaqueAttachmentTests(unittest.TestCase):
                 self.assertIn('原导出类型：位置', location['content'])
                 self.assertEqual(match_quote({'evidence': location['content']}, artifacts['messages'])['status'], 'unmatched')
             chunk = json.dumps({key: [] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
-            responses = [chunk, '# 合成报告\n<!-- END_FINAL_REPORT -->', '# 合成侧写\n<!-- END_PERSONA_REPORT -->']
-            with patch('web_worker.load_llm_config', return_value=config), patch('llm_client.call_llm', side_effect=responses):
+            responses = [chunk, claim_response('合成报告', report_kind='analysis'), claim_response('合成侧写', report_kind='persona')]
+            with patch('web_worker.load_llm_config', return_value=config), patch('llm_client.call_llm', side_effect=with_reviews(responses)):
                 result = run_job(root, folder, options, lambda event: None)
             self.assertEqual(result['stats']['total_messages'], 6)
-            self.assertEqual(len(result['files']), 9)
+            self.assertEqual(len(result['files']), 11)
             ledger = json.loads((folder / result['files']['evidence']['path']).read_text(encoding='utf-8'))
             saved = json.dumps(ledger, ensure_ascii=False)
             for private in ('合成地址甲', '合成地址乙', '31.123456', '121.654321', '32.123456', '122.654321'):
@@ -141,6 +202,27 @@ class ThinkingConfigurationTests(unittest.TestCase):
     def test_invalid_thinking_setting_is_rejected_before_requests(self):
         with self.assertRaisesRegex(ValueError, 'LLM_THINKING'):
             self.load(LLM_THINKING='typo')
+
+    def test_output_floor_is_explicit_and_validated(self):
+        self.assertEqual(self.load().min_output_tokens, 0)
+        self.assertEqual(self.load(LLM_MIN_OUTPUT_TOKENS='24000').min_output_tokens, 24000)
+        for value in ('-1', '1.5', 'typo', ''):
+            with self.subTest(value=value), self.assertRaisesRegex(ValueError, 'LLM_MIN_OUTPUT_TOKENS'):
+                self.load(LLM_MIN_OUTPUT_TOKENS=value)
+
+    def test_output_floor_reaches_requests_and_truncation_retries(self):
+        config = self.load(LLM_MIN_OUTPUT_TOKENS='24000')
+        for marked in (False, True):
+            with self.subTest(marked=marked), patch.object(llm_client, 'call_llm', side_effect=[
+                    llm_client.LLMOutputTruncated(), 'done END']) as api:
+                if marked:
+                    llm_client.generate_marked_report(config, 's', 'u', 10, 'END', 'report', 2600,
+                                                     retry_sleep_seconds=0)
+                else:
+                    result = llm_client.call_llm_with_retry_result(config, 's', 'u', 10, 2600,
+                                                                  retry_sleep_seconds=0)
+                    self.assertEqual(result.max_tokens_used, 48000)
+            self.assertEqual([call.kwargs['max_tokens'] for call in api.call_args_list], [24000, 48000])
 
     def test_request_contains_configured_thinking_mode(self):
         config = self.load()

@@ -1,4 +1,5 @@
 """只用合成账本验证检索、来源、隔离与数据库事务。"""
+from claim_fixtures import claim_response, with_reviews
 import copy
 from contextlib import closing
 import json
@@ -216,8 +217,8 @@ class EvidenceStoreTests(unittest.TestCase):
         from types import SimpleNamespace
         artifacts = build_artifacts(self.source, self.root / 'generated')
         config = SimpleNamespace(api_base='https://example.invalid', api_key='fake', model='synthetic')
-        with patch('llm_client.call_llm', side_effect=[json.dumps({key: [] for key in KEYS}),
-                '合成报告 <!-- END_FINAL_REPORT -->']):
+        with patch('llm_client.call_llm', side_effect=with_reviews([json.dumps({key: [] for key in KEYS}),
+                claim_response('合成报告', report_kind='analysis')])):
             chunk_pipeline.run_single_workflow(artifacts, 'skill', config, 1, settings=chunking.ChunkSettings(chunk_sleep=0))
         ledger = json.loads(artifacts['evidence_ledger_file'].read_text(encoding='utf-8'))
         self.assertEqual(ledger['redaction']['source_id'], ledger['source_id'])

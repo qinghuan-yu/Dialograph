@@ -1,11 +1,12 @@
 """模型证据规范化、校验、账本与分块缓存。"""
 from __future__ import annotations
 
+import copy
 import json
 import re
 from pathlib import Path
 from llm_client import call_llm_with_retry_result
-from evidence_validation import (validate_evidence, balanced_items, SUMMARY_LIMIT,
+from evidence_validation import (FIELDS, validate_evidence, balanced_items, SUMMARY_LIMIT,
                                  EXTRACTION_SCHEMA_VERSION as EVIDENCE_SCHEMA_VERSION)
 from evidence_grounding import (grounding_issues, validate_grounded_document, GROUNDING_VERSION, LEDGER_VERSION)
 from privacy_redaction import current_redactor
@@ -152,6 +153,18 @@ def is_complete_chunk_evidence(evidence: dict) -> bool:
     return True
 
 
+def resolve_source_aliases(document: dict, messages: list[dict]) -> dict:
+    """只将本块展示的短编号映射回完整编号；未知值留给原文绑定隔离。"""
+    aliases = {f'm{index}': message['message_id'] for index, message in enumerate(messages, 1)}
+    result = copy.deepcopy(document)
+    for category in FIELDS:
+        for item in result[category]:
+            hints = item.get('source_message_ids')
+            if isinstance(hints, list):
+                item['source_message_ids'] = [aliases.get(hint, hint) if isinstance(hint, str) else hint for hint in hints]
+    return result
+
+
 def generate_chunk_analysis(
     config,
     prompt: str,
@@ -193,7 +206,11 @@ def compact_text(value, max_chars: int = 240) -> str:
     return text[:max_chars].rstrip() + "..."
 
 
-def format_evidence_summary(evidence_docs: list[dict]) -> str:
+def format_evidence_summary(
+    evidence_docs: list[dict],
+    *,
+    max_items_per_type: int | None = EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE,
+) -> str:
     schema = LEDGER_VERSION if evidence_docs and all(doc.get('grounding_version') == GROUNDING_VERSION for doc in evidence_docs) else EVIDENCE_SCHEMA_VERSION
     sections = [
         ("events", "事件证据"),
@@ -209,19 +226,29 @@ def format_evidence_summary(evidence_docs: list[dict]) -> str:
         f"- 解析失败分块数: {sum(1 for doc in evidence_docs if doc.get('parse_status') != 'ok')}",
         "- 说明: 以下摘要来自每个分块末尾的结构化 JSON 证据块，用于最终关系建模、人物侧写和后续 RAG。",
         "- 原文绑定仅核对文字出处；存疑不是已证实事实，不能据此证明解释正确。",
+        "- 引文发送方：我=用户，对方=分析对象。不能把用户自述当作对方的表达或性格。",
     ]
     for key, title in sections:
         qualified = [{**doc, key: [item for item in ensure_list(doc.get(key))
                                   if doc.get('grounding_version') != GROUNDING_VERSION
                                   or item.get('grounding', {}).get('status') in ('matched', 'not_applicable')]}
                      for doc in evidence_docs]
-        items = balanced_items(qualified, key, EVIDENCE_SUMMARY_MAX_ITEMS_PER_TYPE)
+        grounded_count = sum(len(doc[key]) for doc in qualified)
+        if key == 'persona_signals':
+            qualified = [{**doc, key: [item for item in doc[key]
+                         if doc.get('grounding_version') != GROUNDING_VERSION
+                         or (item['grounding']['source_refs'] and all(
+                             ref['sender'] == 'other' for ref in item['grounding']['source_refs']))]}
+                         for doc in qualified]
+        items = balanced_items(qualified, key, max_items_per_type)
         lines.append(f"\n### {title}")
         total = sum(len(ensure_list(doc.get(key))) for doc in evidence_docs)
         usable = sum(len(doc[key]) for doc in qualified)
         lines.append(f'- 总数 {total}；选取 {len(items)}；省略 {total - len(items)}。完整条目保留于结构化证据总表。')
-        if usable < total:
-            lines.append(f'- 未匹配或歧义条目 {total - usable} 条已隔离，不作为报告证据。')
+        if grounded_count < total:
+            lines.append(f'- 未匹配或歧义条目 {total - grounded_count} 条已隔离，不作为报告证据。')
+        if usable < grounded_count:
+            lines.append(f'- {grounded_count - usable} 条非对方引文只保留于账本，不作为对方直接人物证据。')
         if not items:
             lines.append("- 暂无结构化条目。")
             continue
@@ -246,7 +273,9 @@ def format_evidence_summary(evidence_docs: list[dict]) -> str:
             suffix = f"；证据：{evidence}" if evidence else ""
             conf = f"；可信度：{confidence}" if confidence else ""
             evidence_id = item.get('evidence_id', '未核验旧条目')
-            lines.append(f"- {evidence_id} / {time_label}: {desc}{suffix}{conf}")
+            speaker = ({'me': '我', 'other': '对方'}.get(refs[0].get('sender'), '发言者未核验') if refs else '发言者未核验')
+            source = f" / {speaker}" if evidence else ""
+            lines.append(f"- {evidence_id}{source} / {time_label}: {desc}{suffix}{conf}")
     return "\n".join(lines)
 
 

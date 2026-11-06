@@ -168,6 +168,10 @@ def build_artifacts(
         "coverage_summary_file": coverage_summary_file,
         "evidence_ledger_file": evidence_ledger_file,
         "evidence_summary_file": evidence_summary_file,
+        "analysis_claims_file": support_dir / 'claim_ledger_analysis.json',
+        "persona_claims_file": support_dir / 'claim_ledger_persona.json',
+        "analysis_input_file": support_dir / 'report_input_analysis.md',
+        "persona_input_file": support_dir / 'report_input_persona.md',
     }
 
 

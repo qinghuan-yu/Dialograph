@@ -19,6 +19,7 @@ class LLMConfig:
     model: str
     source: str
     thinking: str | None = None
+    min_output_tokens: int = 0
 
 
 def load_env_file(env_path: Path) -> bool:
@@ -60,10 +61,18 @@ def load_llm_config(workspace: Path) -> LLMConfig:
     elif thinking == 'default':
         thinking = None
 
+    try:
+        min_output_tokens = int(os.getenv('LLM_MIN_OUTPUT_TOKENS', '0'))
+    except ValueError as exc:
+        raise ValueError('LLM_MIN_OUTPUT_TOKENS 必须为非负整数。') from exc
+    if min_output_tokens < 0:
+        raise ValueError('LLM_MIN_OUTPUT_TOKENS 必须为非负整数。')
+
     return LLMConfig(
         api_base=api_base,
         api_key=api_key,
         model=model,
         source=source,
         thinking=thinking,
+        min_output_tokens=min_output_tokens,
     )

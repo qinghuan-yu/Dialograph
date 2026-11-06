@@ -9,6 +9,7 @@ from datetime import datetime
 from urllib import error, request
 
 from privacy_redaction import current_redactor
+from llm_usage import record_request
 
 class LLMOutputTruncated(RuntimeError):
     """Raised when the provider reports that output stopped because of token limits."""
@@ -57,9 +58,20 @@ def call_llm(
         },
         method="POST",
     )
-    with request.urlopen(req, timeout=timeout) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
+    started, data, failure = time.perf_counter(), None, None
+    try:
+        with request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+        return response_content(data)
+    except Exception as exc:
+        # 用量包括被截断、无正文和失败的尝试；保留原异常交给既有重试策略。
+        failure = type(exc).__name__
+        raise
+    finally:
+        record_request(model, data, failure, round((time.perf_counter() - started) * 1000), max_tokens)
 
+
+def response_content(data) -> str:
     choices = data.get("choices") or []
     if not choices:
         raise ValueError(f"LLM 返回缺少 choices: {data}")
@@ -99,6 +111,8 @@ def should_retry_with_smaller_prompt(exc: Exception) -> bool:
 
 
 def should_retry_request(exc: Exception) -> bool:
+    if isinstance(exc, http.client.IncompleteRead):
+        return True
     if isinstance(exc, error.HTTPError):
         return exc.code in {408, 429, 500, 502, 503, 504}
     return should_retry_with_smaller_prompt(exc)
@@ -130,7 +144,9 @@ def call_llm_with_retry_result(
     max_attempts: int = 3,
     retry_sleep_seconds: float = 3.0,
 ) -> LLMRetryResult:
+    max_tokens = max(max_tokens, getattr(config, 'min_output_tokens', 0))
     current_max_tokens = max_tokens
+    retry_token_limit = 8000 if max_tokens <= 8000 else max_tokens * 2
     for attempt in range(1, max_attempts + 1):
         try:
             if attempt > 1:
@@ -149,7 +165,7 @@ def call_llm_with_retry_result(
             return LLMRetryResult(content=current_redactor().response(content), max_tokens_used=current_max_tokens)
         except Exception as exc:  # noqa: BLE001
             if isinstance(exc, LLMOutputTruncated) and attempt < max_attempts:
-                current_max_tokens = min(current_max_tokens * 2, 8000)
+                current_max_tokens = min(current_max_tokens * 2, retry_token_limit)
                 print(f"- 输出被 max_tokens 截断，提升输出上限后重试: {current_max_tokens}")
                 time.sleep(retry_sleep_seconds)
                 continue
@@ -192,7 +208,8 @@ def generate_marked_report(
     max_attempts: int = 3,
     retry_sleep_seconds: float = 3.0,
 ) -> str:
-    max_tokens = initial_max_tokens
+    max_tokens = max(initial_max_tokens, getattr(config, 'min_output_tokens', 0))
+    retry_token_limit = 8000 if max_tokens <= 8000 else max_tokens * 2
     last_report = ""
     last_error: Exception | None = None
     for attempt in range(1, max_attempts + 1):
@@ -209,7 +226,7 @@ def generate_marked_report(
         except LLMOutputTruncated as exc:
             last_error = exc
             if attempt < max_attempts:
-                max_tokens = min(max_tokens * 2, 8000)
+                max_tokens = min(max_tokens * 2, retry_token_limit)
                 print(f"- {label}输出被 max_tokens 截断，提升输出上限后重试: {max_tokens}")
                 time.sleep(retry_sleep_seconds)
                 continue
@@ -225,7 +242,7 @@ def generate_marked_report(
         if marker in last_report:
             return last_report
         if attempt < max_attempts:
-            max_tokens = min(max_tokens * 2, 8000)
+            max_tokens = min(max_tokens * 2, retry_token_limit)
             print(f"- {label}缺少完成标记，提升输出上限后重试: {max_tokens}")
             time.sleep(retry_sleep_seconds)
 

@@ -1,4 +1,5 @@
 """脱敏测试只使用虚构昵称与示例号码，不访问真实私聊。"""
+from claim_fixtures import claim_response, with_reviews
 import contextlib
 import io
 import json
@@ -89,12 +90,12 @@ class PrivacyPipelineTests(unittest.TestCase):
         chunk['events'] = [{'summary': '记录约定', 'evidence': quote, 'confidence': 'low',
                             'source_message_ids': [artifacts['messages'][1]['message_id']]}]
         config = SimpleNamespace(model='test', api_base='https://test.invalid', api_key='test-only')
-        responses = [json.dumps(chunk), '# 报告\n联系13800138000\n<!-- END_FINAL_REPORT -->',
-                     '# 侧写\nsynthetic.person@example.invalid\n<!-- END_PERSONA_REPORT -->']
+        responses = [json.dumps(chunk), claim_response('报告 联系13800138000', report_kind='analysis'),
+                     claim_response('侧写 synthetic.person@example.invalid', report_kind='persona')]
         def api(*args, **kwargs):
             self.assert_redacted(kwargs['system_prompt'] + kwargs['user_prompt'])
             return responses.pop(0)
-        with patch.object(llm_client, 'call_llm', side_effect=api), contextlib.redirect_stdout(io.StringIO()):
+        with patch.object(llm_client, 'call_llm', side_effect=with_reviews(api)), contextlib.redirect_stdout(io.StringIO()):
             workflow.run_single_workflow(artifacts, 'skill', config, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
             report_generation.generate_persona_report(artifacts, 'skill', config, 5)
         for path in (self.root / 'out').rglob('*'):
@@ -144,7 +145,7 @@ class PrivacyPipelineTests(unittest.TestCase):
                             'source_message_ids': [artifacts['messages'][0]['message_id']]}]
         encoded = json.dumps(chunk).replace('13800138000', ''.join('\\u%04x' % ord(c) for c in '13800138000'))
         config = SimpleNamespace(model='test', api_base='https://test.invalid', api_key='test-only')
-        with patch.object(llm_client, 'call_llm', side_effect=[encoded, '报告 <!-- END_FINAL_REPORT -->']), \
+        with patch.object(llm_client, 'call_llm', side_effect=with_reviews([encoded, claim_response('报告', report_kind='analysis')])), \
              contextlib.redirect_stdout(io.StringIO()):
             workflow.run_single_workflow(artifacts, 'skill', config, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
         for path in artifacts['runs_dir'].rglob('*'):
@@ -200,7 +201,7 @@ class PrivacyPipelineTests(unittest.TestCase):
         payload['events'] = [{'summary': '约定', 'evidence': '周末再聊', 'confidence': 'low'}]
         config = SimpleNamespace(model='test', api_base='https://test.invalid', api_key='test-only')
         with patch.object(llm_client, 'call_llm', return_value=json.dumps(payload)), \
-             patch.object(workflow, 'generate_marked_report', return_value='报告 <!-- END_FINAL_REPORT -->'), \
+             patch.object(workflow, 'call_llm_with_retry', side_effect=with_reviews([claim_response('报告', report_kind='analysis')])), \
              contextlib.redirect_stdout(io.StringIO()):
             workflow.run_single_workflow(artifacts, 'skill', config, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
         ledger = json.loads(artifacts['evidence_ledger_file'].read_text(encoding='utf-8'))

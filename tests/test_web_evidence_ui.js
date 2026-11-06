@@ -294,6 +294,8 @@ test("报告阅读隐藏固定前言，用轻量标签显示判断类别并保�
   assert.doesNotMatch(target.textContent, /固定前言|内部运行参数|【推断】|【事实\+推断】/);
   assert.match(target.textContent, /推断.*具体判断/);
   assert.ok(h.created.some(n => n.className?.includes("claim-label")));
+  h.context.renderMarkdown("【原话概括】对方表达过计划。", target);
+  assert.ok(h.created.some(n => n.className?.includes("claim-label") && n.textContent === "原话概括"));
 });
 
 test("紧凑分块组的每一段都有独立引用，不留下内部序号", () => {

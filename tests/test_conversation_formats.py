@@ -1,4 +1,5 @@
 """多格式导入回归；只使用合成私聊和群聊。"""
+from claim_fixtures import claim_response, with_reviews
 import copy
 import json
 import sys
@@ -95,7 +96,7 @@ class ConversationFormatTests(unittest.TestCase):
             ALPHA_CHAT.replace('2026-10-28 09:01:00', '2026-13-28 09:01:00'),
             ALPHA_CHAT.replace('**合成对象** · 2026-10-28 09:01:00', '**合成对象** · 时间缺失'),
             ALPHA_CHAT.replace('**合成对象** · 2026-10-28 09:01:00', '**合成对象** 2026-10-28 09:01:00'),
-            ALPHA_CHAT.replace('· 图片', '· 未知类型'),
+            ALPHA_CHAT.replace('· 图片', '· '),
         ]
         for text in invalid:
             with self.subTest(text=text[:20]), self.assertRaises(ValueError):
@@ -177,6 +178,8 @@ class ConversationFormatTests(unittest.TestCase):
 
     def test_both_formats_complete_report_audit_and_reuse_without_new_calls(self):
         for suffix, raw, expected in [('.md', ALPHA_CHAT, 3),
+                                      ('.md', ALPHA_CHAT.replace('· 图片', '· 其他'), 3),
+                                      ('.md', ALPHA_CHAT.replace('测试第一行\n测试第二行', ' \t\u3000'), 3),
                                       ('.json', json.dumps(canonical_chat()), 2)]:
             with self.subTest(suffix=suffix), tempfile.TemporaryDirectory() as tmp:
                 root = Path(tmp)
@@ -188,14 +191,16 @@ class ConversationFormatTests(unittest.TestCase):
                 options = {'mode': 'full', 'input_name': input_name}
                 chunk = json.dumps({key: [] for key in
                                     ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
-                responses = [chunk, '# 合成报告\n<!-- END_FINAL_REPORT -->',
-                             '# 合成侧写\n<!-- END_PERSONA_REPORT -->']
+                responses = [chunk, claim_response('合成报告', report_kind='analysis'),
+                             claim_response('合成侧写', report_kind='persona')]
                 with patch('web_worker.load_llm_config', return_value=config):
-                    with patch('llm_client.call_llm', side_effect=responses) as llm:
+                    with patch('llm_client.call_llm', side_effect=with_reviews(responses)) as llm:
                         result = run_job(root, folder, options, lambda event: None)
-                    self.assertEqual(llm.call_count, 3)
+                    self.assertEqual(llm.call_count, 5)
                     self.assertEqual(result['stats']['total_messages'], expected)
-                    self.assertEqual(len(result['files']), 9)
+                    self.assertEqual(len(result['files']), 11)
+                    persona_input = next((folder / 'output').rglob('report_input_persona.md')).read_text(encoding='utf-8')
+                    self.assertIn('入选证据的连续原文', persona_input)
                     with patch('llm_client.call_llm', side_effect=AssertionError('不应重复请求')):
                         resumed = run_job(root, folder, {**options, 'resume': True}, lambda event: None)
                     self.assertEqual(result['files'], resumed['files'])

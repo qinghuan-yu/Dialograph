@@ -1,4 +1,5 @@
 """架构边界回归：只使用合成输入和请求替身。"""
+from claim_fixtures import claim_response, with_reviews
 import contextlib
 import io
 import json
@@ -47,14 +48,14 @@ class BudgetTests(unittest.TestCase):
         self.assertIn(f'E_{30:032x}', prompt)
         self.assertIn('关系30', prompt)
         self.assertIn('人物30', prompt)
-        self.assertLessEqual(len(prompt.encode('utf-8')), 30000)
+        self.assertLessEqual(len(prompt.encode('utf-8')), 50000)
         self.assertIn('省略', prompt)
 
     def test_persona_uses_same_balancing_and_bounded_context(self):
         evidence, phases = synthetic_summaries()
         prompt = report_generation.build_persona_prompt('合成', '统计' * 20000, '覆盖' * 20000,
             evidence, phases, '关系报告' * 30000)
-        self.assertLessEqual(len(prompt.encode('utf-8')), 40000)
+        self.assertLessEqual(len(prompt.encode('utf-8')), 55000)
         self.assertIn('反证30', prompt)
         self.assertIn('疑问30', prompt)
         self.assertIn('省略', prompt)
@@ -66,7 +67,7 @@ class BudgetTests(unittest.TestCase):
         self.assertLessEqual(len(selected.encode('utf-8')), 12000)
         prompt = report_generation.build_persona_prompt('合成', '统计' * 20000, '覆盖' * 20000,
             evidence, ['\n\n'.join(phases)], '关系报告' * 30000)
-        self.assertLessEqual(len(prompt.encode('utf-8')), 40000)
+        self.assertLessEqual(len(prompt.encode('utf-8')), 55000)
         self.assertIn('反证30', prompt)
         self.assertIn(f'E_{30:032x}', prompt)
 
@@ -124,8 +125,8 @@ class ReportLifecycleTests(unittest.TestCase):
         source = root / 'input.json'
         source.write_bytes((Path(__file__).parent / 'fixtures' / 'web_smoke.json').read_bytes())
         artifacts = analysis_artifacts.build_artifacts(source, root / 'out')
-        with patch.object(llm_client, 'call_llm', side_effect=[json.dumps({key: [] for key in KEYS}),
-                'relation <!-- END_FINAL_REPORT -->', 'old persona <!-- END_PERSONA_REPORT -->']), \
+        with patch.object(llm_client, 'call_llm', side_effect=with_reviews([json.dumps({key: [] for key in KEYS}),
+                claim_response('relation', report_kind='analysis'), claim_response('old persona', report_kind='persona')])), \
              contextlib.redirect_stdout(io.StringIO()):
             workflow.run_single_workflow(artifacts, 'skill', CONFIG, 1, settings=chunking.ChunkSettings(chunk_sleep=0))
             report_generation.generate_persona_report(artifacts, 'skill', CONFIG, 1)
@@ -147,7 +148,7 @@ class ReportLifecycleTests(unittest.TestCase):
                         raise OSError('synthetic publish failure')
                     return real_replace(src, dst)
                 with self.subTest(step=failure_step), patch('os.replace', side_effect=fail_once), \
-                     patch.object(llm_client, 'call_llm', return_value='new persona <!-- END_PERSONA_REPORT -->'), \
+                     patch.object(llm_client, 'call_llm', side_effect=with_reviews([claim_response('new persona', report_kind='persona')])), \
                      contextlib.redirect_stdout(io.StringIO()):
                     with self.assertRaises(OSError):
                         report_generation.generate_persona_report(artifacts, 'skill', CONFIG, 1)
@@ -160,7 +161,7 @@ class ReportLifecycleTests(unittest.TestCase):
             old = [path.read_bytes() for path in paths]
             audit = SimpleNamespace(ok=False, errors=['synthetic audit failure'])
             with patch.object(report_generation, 'audit_artifacts', return_value=audit), \
-                 patch.object(llm_client, 'call_llm', return_value='new persona <!-- END_PERSONA_REPORT -->'), \
+                 patch.object(llm_client, 'call_llm', side_effect=with_reviews([claim_response('new persona', report_kind='persona')])), \
                  contextlib.redirect_stdout(io.StringIO()):
                 with self.assertRaisesRegex(ValueError, '审计'):
                     report_generation.generate_persona_report(artifacts, 'skill', CONFIG, 1)

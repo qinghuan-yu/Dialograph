@@ -4,15 +4,18 @@ from __future__ import annotations
 from artifact_audit import audit_artifacts, has_marker, PERSONA_MARKER
 from workflow_state import run_identity, resume_metadata, LIMIT_KEYS, report_matches
 import chunk_pipeline as workflow
-from report_generation import generate_persona_report
+from report_generation import generate_persona_report, build_report_system_prompt
 from chunking import ChunkSettings
 from analysis_types import AnalysisArtifacts
+from llm_usage import track_analysis_usage
 
 
+@track_analysis_usage
 def analyze_conversation(artifacts: AnalysisArtifacts, skill_prompt, persona_skill_prompt, config, timeout,
                          *, force=False, force_persona=False, resume_run_id=None,
                          auto_resume=False, on_warning=None, **chunk_options):
     warnings = []
+    report_system_prompt = build_report_system_prompt(skill_prompt, persona_skill_prompt)
 
     def warn(message):
         warnings.append(message)
@@ -21,11 +24,11 @@ def analyze_conversation(artifacts: AnalysisArtifacts, skill_prompt, persona_ski
         else:
             print(f'- 审计提示: {message}')
 
-    relation_ready = (audit_artifacts(artifacts, require_persona=False).ok
-                      and report_matches(artifacts, skill_prompt, config))
+    relation_ready = (audit_artifacts(artifacts, require_persona=False, require_claims=True).ok
+                      and report_matches(artifacts, skill_prompt, config, report_system_prompt=report_system_prompt))
     if resume_run_id:
         # 用户点名的 run 必须严格校验，不偷偷改成付费新运行。
-        resume_metadata(artifacts, resume_run_id, run_identity(artifacts, skill_prompt, config))
+        resume_metadata(artifacts, resume_run_id, run_identity(artifacts, skill_prompt, config, report_system_prompt=report_system_prompt))
     elif auto_resume and not relation_ready:
         incompatible = False
         runs = sorted(artifacts['runs_dir'].glob('*'), reverse=True) if artifacts['runs_dir'].exists() else []
@@ -33,7 +36,7 @@ def analyze_conversation(artifacts: AnalysisArtifacts, skill_prompt, persona_ski
             if not run.is_dir():
                 continue
             try:
-                saved = resume_metadata(artifacts, run.name, run_identity(artifacts, skill_prompt, config))
+                saved = resume_metadata(artifacts, run.name, run_identity(artifacts, skill_prompt, config, report_system_prompt=report_system_prompt))
             except ValueError:
                 incompatible = True
                 continue
@@ -45,12 +48,14 @@ def analyze_conversation(artifacts: AnalysisArtifacts, skill_prompt, persona_ski
     need_analysis = force or resume_run_id is not None or not relation_ready
     need_persona = (need_analysis or force_persona
                     or not has_marker(artifacts['persona_file'], PERSONA_MARKER)
-                    or not report_matches(artifacts, persona_skill_prompt, config, persona=True))
+                    or not audit_artifacts(artifacts, require_persona=True, require_claims=True).ok
+                    or not report_matches(artifacts, persona_skill_prompt, config, persona=True, report_system_prompt=report_system_prompt))
     if need_analysis:
         auto_shrink = chunk_options.pop('auto_shrink', True)
         result = workflow.run_single_workflow_with_auto_shrink(
             artifacts, skill_prompt, config, timeout=timeout,
-            resume_run_id=resume_run_id, settings=ChunkSettings(**chunk_options), auto_shrink=auto_shrink)
+            resume_run_id=resume_run_id, settings=ChunkSettings(**chunk_options), auto_shrink=auto_shrink,
+            report_system_prompt=report_system_prompt)
     else:
         result = {'name': artifacts['name'], 'status': 'success' if need_persona else 'skipped',
                   'analysis_file': str(artifacts['analysis_file']),
@@ -58,9 +63,9 @@ def analyze_conversation(artifacts: AnalysisArtifacts, skill_prompt, persona_ski
                   'reused_analysis': True,
                   'sample_count': artifacts['sample_count'], 'segment_count': artifacts['segment_count']}
     if need_persona:
-        generate_persona_report(artifacts, persona_skill_prompt, config, timeout)
+        generate_persona_report(artifacts, persona_skill_prompt, config, timeout, report_system_prompt=report_system_prompt)
     result['persona_file'] = str(artifacts['persona_file'])
-    audit = audit_artifacts(artifacts, require_persona=True)
+    audit = audit_artifacts(artifacts, require_persona=True, require_claims=True)
     if not audit.ok:
         raise ValueError('结果完整性检查未通过：' + '；'.join(audit.errors))
     for message in audit.warnings:

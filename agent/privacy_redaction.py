@@ -20,7 +20,7 @@ RESERVED = {'我', '对方', 'me', 'other', 'unknown'}
 PLACEHOLDER = re.compile(r'(\[(?:手机号|邮箱|证件|银行卡|链接|账号|自定义)\d+\]|\[参与者\])')
 ENUM_FIELDS = {'confidence': {'high', 'medium', 'low'}, 'direction': {'support', 'against', 'mixed'},
                'stability': {'local', 'repeated', 'unclear'},
-               'schema_version': {'chat-evidence-v1', 'chat-evidence-v2'}}
+               'schema_version': {'chat-evidence-v1', 'chat-evidence-v2', 'chat-claims-v1', 'chat-claims-v2'}}
 _ACTIVE = ContextVar('dialograph_redactor', default=None)
 
 

@@ -74,7 +74,8 @@ class ReportReferenceTests(unittest.TestCase):
         persona = report_generation.build_persona_prompt('对象', 'stats', 'coverage', 'evidence', ['phase'], 'relation')
         for prompt in (final, persona):
             self.assertIn('完整的 E_ 加 32 位十六进制编号', prompt)
-            self.assertIn('直接进入正文', prompt)
+            self.assertIn('程序从通过校验的结论生成报告', prompt)
+            self.assertIn('“我”的自述不能写成对方说过的话', prompt)
         self.assertNotIn('先写一段 2 到 4 句声明', final)
 
 

@@ -1,0 +1,167 @@
+{
+  "schema_version": "claim-semantic-cases-v1",
+  "provenance": "人工编写的合成案例，非私人聊天的脱敏副本；标注用于固定命题下的证据角色验收。",
+  "cases": [
+    {
+      "id": "care_and_busy_schedule",
+      "proposition": "对方在这次交流中表达了关心。",
+      "messages": [
+        {"position": 1, "sender": "me", "text": "这次面试没通过，有些难过。"},
+        {"position": 2, "sender": "other", "text": "你想说的话我愿意听，别一个人扛着。"},
+        {"position": 3, "sender": "other", "text": "今天有课不能见面，周末我有空。"}
+      ],
+      "required_positions": [1, 2, 3],
+      "expected": {"assessment": "supported", "roles": {"2": "support", "3": "limitation"}},
+      "review_notes": "见面时间受限不否定已表达的关心；不能强行作为反证。"
+    },
+    {
+      "id": "explicit_refusal_challenges_always",
+      "proposition": "对方每次收到求助都会答应。",
+      "messages": [
+        {"position": 1, "sender": "me", "text": "上周能帮我核对表格吗？"},
+        {"position": 2, "sender": "other", "text": "可以，我已经核对完了。"},
+        {"position": 3, "sender": "me", "text": "这周再帮我看一份好吗？"},
+        {"position": 4, "sender": "other", "text": "这次我不答应，也不会接这个任务。"}
+      ],
+      "required_positions": [1, 2, 3, 4],
+      "expected": {"assessment": "contradicted", "roles": {"2": "support", "4": "counter"}},
+      "review_notes": "一次明确拒绝直接反驳每次都会答应；拒绝并不单独证明不关心。"
+    },
+    {
+      "id": "disclosure_and_repair_do_not_erase_event",
+      "proposition": "对方从未转发用户的私人材料。",
+      "messages": [
+        {"position": 1, "sender": "me", "text": "那份私人草稿怎么到了别人那里？"},
+        {"position": 2, "sender": "other", "text": "是我发给同学的，我没有先征求你同意。"},
+        {"position": 3, "sender": "other", "text": "我已经请同学删除，也为这件事道歉。"},
+        {"position": 4, "sender": "me", "text": "先处理后续，今后转发前请问我。"}
+      ],
+      "required_positions": [1, 2, 3, 4],
+      "expected": {"assessment": "contradicted", "roles": {"2": "counter", "3": "irrelevant"}},
+      "review_notes": "补救与从未发生是不同命题；补救不使已发生的转发消失。"
+    },
+    {
+      "id": "repair_is_attempt_not_proven_outcome",
+      "proposition": "这次外传已经被完全解决。",
+      "messages": [
+        {"position": 1, "sender": "other", "text": "我未经允许转发了文件。"},
+        {"position": 2, "sender": "other", "text": "我联系了收到文件的人，请他们删除。"},
+        {"position": 3, "sender": "me", "text": "还有哪些人留着副本，目前并不清楚。"}
+      ],
+      "required_positions": [1, 2, 3],
+      "expected": {"assessment": "insufficient", "roles": {"2": "limitation", "3": "limitation"}},
+      "review_notes": "有处理动作但没有核实最终效果；未知不是已经失败，也不是已经完全解决。"
+    },
+    {
+      "id": "brief_start_followed_by_support",
+      "proposition": "这次困难表达后，对方没有尝试了解情况。",
+      "messages": [
+        {"position": 1, "sender": "me", "text": "今天遇到一件让我很难受的事。"},
+        {"position": 2, "sender": "other", "text": "啊，抱抱。"},
+        {"position": 3, "sender": "me", "text": "我不太知道从哪说。"},
+        {"position": 4, "sender": "other", "text": "刚刚在开会没认真回，抱歉。发生了什么？"},
+        {"position": 5, "sender": "other", "text": "你慢慢讲，我想了解，也可以给你打电话。"}
+      ],
+      "required_positions": [1, 2, 3, 4, 5],
+      "expected": {"assessment": "contradicted", "roles": {"2": "irrelevant", "4": "counter", "5": "counter"}},
+      "review_notes": "短回复不能证明没有尝试；必须保留之后的追问和修复。"
+    },
+    {
+      "id": "speaker_ownership",
+      "proposition": "对方在这段对话里自述学习压力很大。",
+      "messages": [
+        {"position": 1, "sender": "me", "text": "这段时间课程压力很大，我有点疲惫。"},
+        {"position": 2, "sender": "other", "text": "是哪门课最让你发愁？"}
+      ],
+      "required_positions": [1, 2],
+      "expected": {"assessment": "insufficient", "roles": {"1": "irrelevant", "2": "irrelevant"}},
+      "review_notes": "用户自述不能变成对方自述；追问也不是对方承认同样压力。"
+    },
+    {
+      "id": "copied_text_is_not_autobiography",
+      "proposition": "这段抒情文字证明对方本人正在经历被抛弃感。",
+      "messages": [
+        {"position": 1, "sender": "me", "text": "转一段台词：我只是路过的星光，等不到故事结尾。"},
+        {"position": 2, "sender": "other", "text": "我只是路过的星光，等不到故事结尾。"},
+        {"position": 3, "sender": "other", "text": "这是复制的台词，一起玩这个梗而已。"}
+      ],
+      "required_positions": [1, 2, 3],
+      "expected": {"assessment": "insufficient", "roles": {"2": "irrelevant", "3": "limitation"}},
+      "review_notes": "发送属实不等于内容是自传；说明引用来源限制了人格解读。"
+    },
+    {
+      "id": "third_party_retelling",
+      "proposition": "对方本人拒绝被叫那个昵称。",
+      "messages": [
+        {"position": 1, "sender": "other", "text": "我讲讲同学遇到的事。"},
+        {"position": 2, "sender": "other", "text": "那位同学说，请不要再这样叫我。"},
+        {"position": 3, "sender": "me", "text": "明白，这是你在转述同学的话。"}
+      ],
+      "required_positions": [1, 2, 3],
+      "expected": {"assessment": "insufficient", "roles": {"2": "irrelevant", "3": "limitation"}},
+      "review_notes": "话由对方发送，但被转述的拒绝属于第三人。"
+    },
+    {
+      "id": "first_person_retelling_is_self_report",
+      "proposition": "对方自述曾向别人表达称呼边界。",
+      "messages": [
+        {"position": 1, "sender": "other", "text": "这是我和一位新朋友的经历。"},
+        {"position": 2, "sender": "other", "text": "我当时告诉对方，不要再用那个称呼叫我。"},
+        {"position": 3, "sender": "me", "text": "对方后来听进去了吗？"},
+        {"position": 4, "sender": "other", "text": "后续情况我还没有核实。"}
+      ],
+      "required_positions": [1, 2, 3, 4],
+      "expected": {"assessment": "supported", "roles": {"2": "support", "4": "limitation"}},
+      "review_notes": "这是对方的第一人称自述，不能因涉及第三人就全部排除；仍不能据此确认第三人之后如何行动。"
+    },
+    {
+      "id": "clear_local_photo_boundary",
+      "proposition": "对方在这次交流中拒绝公开这张照片。",
+      "messages": [
+        {"position": 1, "sender": "me", "text": "这张聚会照片可以公开吗？"},
+        {"position": 2, "sender": "other", "text": "请别公开这张照片，我不同意。"}
+      ],
+      "required_positions": [1, 2],
+      "expected": {"assessment": "supported", "roles": {"2": "support"}},
+      "review_notes": "保留明确的局部事实即可，没有必要补一个反证或外推整体关系。"
+    },
+    {
+      "id": "deadline_apology_and_completion",
+      "proposition": "对方在这次任务中没有完成任何工作。",
+      "messages": [
+        {"position": 1, "sender": "other", "text": "我今晚整理目录。"},
+        {"position": 2, "sender": "other", "text": "没赶上今晚的时间，抱歉，明早补交。"},
+        {"position": 3, "sender": "other", "text": "目录已经整理完并发给你了。"},
+        {"position": 4, "sender": "me", "text": "收到文件，内容是齐的。"}
+      ],
+      "required_positions": [1, 2, 3, 4],
+      "expected": {"assessment": "contradicted", "roles": {"2": "limitation", "3": "counter", "4": "counter"}},
+      "review_notes": "延期限制准时性评价，但不等于什么都没做；后续完成不可省略。"
+    },
+    {
+      "id": "unfamiliar_group_not_personal_rejection",
+      "proposition": "对方这次拒绝与用户本人见面。",
+      "messages": [
+        {"position": 1, "sender": "me", "text": "和几个你不认识的朋友一起吃饭好吗？"},
+        {"position": 2, "sender": "other", "text": "人太多而且不熟，我不想参加这场聚会。"},
+        {"position": 3, "sender": "other", "text": "我们两个人明天吃饭可以。"}
+      ],
+      "required_positions": [1, 2, 3],
+      "expected": {"assessment": "contradicted", "roles": {"2": "limitation", "3": "counter"}},
+      "review_notes": "拒绝特定群体活动不等于拒绝用户；替代邀约直接削弱该判断。"
+    },
+    {
+      "id": "continued_friendship_not_proof_of_no_breach",
+      "proposition": "之后仍然约饭，说明之前没有发生保密失误。",
+      "messages": [
+        {"position": 1, "sender": "other", "text": "之前我擅自把你的私信给别人看了。"},
+        {"position": 2, "sender": "other", "text": "我承认做错，以后会先问你。"},
+        {"position": 3, "sender": "me", "text": "我们以后再讨论怎么处理，今晚先吃饭。"},
+        {"position": 4, "sender": "other", "text": "好，楼下见。"}
+      ],
+      "required_positions": [1, 2, 3, 4],
+      "expected": {"assessment": "contradicted", "roles": {"1": "counter", "2": "counter", "4": "irrelevant"}},
+      "review_notes": "继续相处和是否发生过失误是不同命题，不能互相抵消。"
+    }
+  ]
+}

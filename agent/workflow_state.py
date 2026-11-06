@@ -10,13 +10,14 @@ import uuid
 from dataclasses import dataclass, replace
 from analysis_types import AnalysisArtifacts, RunPaths, ChunkMetadata
 from chunking import ChunkSettings
+from report_framework import build_report_system_prompt
 import chunking
 import chunk_evidence
 
 LIMIT_KEYS = ('chunk_size', 'chunk_max_bytes', 'chunk_max_prompt_bytes')
 
 
-def run_identity(artifacts, skill_prompt, config):
+def run_identity(artifacts, skill_prompt, config, *, report_system_prompt=None):
     source = artifacts['chat_file'].read_bytes()
     parsed = json.dumps({'messages': artifacts['messages'], 'session': artifacts.get('session', {}),
                          'redaction': artifacts.get('redaction', {})},
@@ -24,6 +25,16 @@ def run_identity(artifacts, skill_prompt, config):
     hasher = hashlib.sha256(b'dialograph-cache-v2\0')
     for name in ('run_workflow.py', 'chunk_pipeline.py', 'chunking.py', 'chunk_evidence.py', 'summary_merge.py', 'analysis_types.py', 'config.py', 'llm_client.py', 'prompt_budget.py', 'analysis_service.py', 'analysis_artifacts.py', 'report_generation.py', 'report_output.py', 'artifact_audit.py', 'analyze.py', 'conversation_input.py', 'conversation_formats.py', 'evidence_validation.py', 'evidence_grounding.py', 'privacy_redaction.py', 'workflow_state.py', 'run_promotion.py'):
         hasher.update((Path(__file__).parent / name).read_bytes())
+    hasher.update((Path(__file__).parent / 'llm_usage.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'report_context.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'claim_retrieval.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'claim_ledger.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'claim_facts.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'claim_semantic_review.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'claim_source_review.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'report_framework.py').read_bytes())
+    system = report_system_prompt if report_system_prompt is not None else build_report_system_prompt(skill_prompt)
+    hasher.update(system.encode('utf-8'))
     hasher.update(skill_prompt.encode('utf-8'))
     hasher.update(str(getattr(config, 'model', '')).encode('utf-8'))
     hasher.update(str(getattr(config, 'api_base', '')).encode('utf-8'))
@@ -32,20 +43,23 @@ def run_identity(artifacts, skill_prompt, config):
             'pipeline_sha256': hasher.hexdigest()}
 
 
-def report_identity(artifacts, skill_prompt, config, *, persona=False):
-    identity = run_identity(artifacts, skill_prompt, config)
+def report_identity(artifacts, skill_prompt, config, *, persona=False, report_system_prompt=None):
+    if report_system_prompt is None:
+        report_system_prompt = (build_report_system_prompt(persona_skill_prompt=skill_prompt) if persona
+                                else build_report_system_prompt(skill_prompt))
+    identity = run_identity(artifacts, skill_prompt, config, report_system_prompt=report_system_prompt)
     if persona:
         for key in ('analysis_file', 'phase_summary_file', 'coverage_summary_file', 'evidence_summary_file'):
             identity[key] = hashlib.sha256(artifacts[key].read_bytes()).hexdigest()
     return identity
 
 
-def report_matches(artifacts, skill_prompt, config, *, persona=False):
+def report_matches(artifacts, skill_prompt, config, *, persona=False, report_system_prompt=None):
     key = 'persona_meta_file' if persona else 'analysis_meta_file'
     try:
         metadata = json.loads(artifacts[key].read_text(encoding='utf-8'))
         return isinstance(metadata, dict) and metadata.get('reuse_identity') == report_identity(
-            artifacts, skill_prompt, config, persona=persona)
+            artifacts, skill_prompt, config, persona=persona, report_system_prompt=report_system_prompt)
     except (OSError, ValueError, TypeError, KeyError):
         return False
 
@@ -89,6 +103,8 @@ def build_run_paths(artifacts: AnalysisArtifacts, run_id: str | None = None) -> 
         "phase_summary_file": run_dir / f"阶段总结_{artifacts['safe_name']}.md",
         "analysis_file": run_dir / f"分析_{artifacts['safe_name']}.md",
         "analysis_meta_file": run_dir / f"报告来源_分析_{artifacts['safe_name']}.json",
+        "analysis_claims_file": run_dir / 'claim_ledger_analysis.json',
+        "analysis_input_file": run_dir / 'report_input_analysis.md',
         "run_metadata_file": run_dir / "run_metadata.json",
     }
 
@@ -126,9 +142,9 @@ class PreparedRun:
 
 
 def prepare_run(artifacts: AnalysisArtifacts, skill_prompt: str, config,
-                settings: ChunkSettings, resume_run_id: str | None) -> PreparedRun:
+                settings: ChunkSettings, resume_run_id: str | None, *, report_system_prompt=None) -> PreparedRun:
     """先核对身份、分区和全部缓存，再允许写运行元数据与覆盖材料。"""
-    identity = run_identity(artifacts, skill_prompt, config)
+    identity = run_identity(artifacts, skill_prompt, config, report_system_prompt=report_system_prompt)
     if resume_run_id:
         saved = resume_metadata(artifacts, resume_run_id, identity)
         settings = replace(settings, **{key: saved[key] for key in LIMIT_KEYS})

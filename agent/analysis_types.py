@@ -19,6 +19,8 @@ class ChunkMetadata(TypedDict):
 
 
 class RunPaths(TypedDict):
+    analysis_claims_file: Path
+    analysis_input_file: Path
     run_id: str
     run_dir: Path
     merge_dir: Path
@@ -35,6 +37,10 @@ class RunPaths(TypedDict):
 
 
 class _ArtifactFields(TypedDict):
+    analysis_claims_file: Path
+    persona_claims_file: Path
+    analysis_input_file: Path
+    persona_input_file: Path
     chat_file: Path
     redaction: dict[str, Any]
     _redactor: Redactor

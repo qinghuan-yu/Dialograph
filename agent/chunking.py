@@ -66,6 +66,45 @@ def format_message_line(message: dict, other_name: str) -> str:
     return f"{message['time_str']} {prefix} {content}"
 
 
+def format_chunk_transcript(chunk: list[dict], other_name: str) -> str:
+    """将同日消息的日期提取到公共行，保留精确到秒的 HH:MM:SS、短编号与发言者，实现无损可逆压缩。"""
+    lines = []
+    current_date = None
+    for index, message in enumerate(chunk, 1):
+        prefix = "【我】" if message["sender"] == "me" else f"【{other_name}】"
+        content = str(message.get("content", "")).replace("\r\n", "\\n").replace("\n", "\\n")
+        time_str = str(message.get("time_str", ""))
+        if len(time_str) == 19 and time_str[4] == "-" and time_str[7] == "-" and time_str[10] == " ":
+            date_part, time_part = time_str[:10], time_str[11:]
+            if date_part != current_date:
+                current_date = date_part
+                lines.append(f"=== {current_date} ===")
+            lines.append(f"[m{index}] {time_part} {prefix} {content}")
+        else:
+            lines.append(f"[m{index}] {time_str} {prefix} {content}")
+    return "\n".join(lines)
+
+
+def expand_compact_transcript(text: str) -> list[str]:
+    """将提取了公共日期行的分块原文无损还原为完整 [mN] YYYY-MM-DD HH:MM:SS 行。"""
+    if "聊天原文:\n" in text:
+        text = text.split("聊天原文:\n", 1)[1].strip()
+    current_date = None
+    expanded = []
+    for line in text.splitlines():
+        if line.startswith("=== ") and line.endswith(" ===") and len(line) == 18:
+            current_date = line[4:-4]
+            continue
+        if line.startswith("[m") and "] " in line and current_date:
+            alias, rest = line.split("] ", 1)
+            if len(rest) >= 8 and rest[2:3] == ":" and rest[5:6] == ":":
+                expanded.append(f"{alias}] {current_date} {rest}")
+                continue
+        if line.startswith("[m"):
+            expanded.append(line)
+    return expanded
+
+
 def build_chunk_manifest(chunk_sets: list[list[dict]]) -> list[ChunkMetadata]:
     manifest = []
     offset = 0
@@ -113,6 +152,13 @@ def split_chunks_by_prompt_budget(
     while queue:
         chunk = queue.pop(0)
         prompt_bytes = len(build_chunk_prompt(stats, 1, 1, chunk).encode("utf-8"))
+        # 短编号与公共日期行减少实际输入，但分块规划仍预留完整编号与完整日期预算，保留原有证据配额密度。
+        full_transcript = "\n".join(
+            f"[{message.get('message_id', '未编号')}] {format_message_line(message, stats['other_name'])}"
+            for message in chunk
+        )
+        compact_transcript = format_chunk_transcript(chunk, stats["other_name"])
+        prompt_bytes += max(0, len(full_transcript.encode("utf-8")) - len(compact_transcript.encode("utf-8")))
         if prompt_bytes <= max_prompt_bytes or len(chunk) <= 1:
             result.append(chunk)
             continue
@@ -151,12 +197,8 @@ def format_coverage_summary(stats: dict, chunk_manifest: list[dict]) -> str:
 
 def build_chunk_prompt(stats: dict, chunk_index: int, total_chunks: int, chunk: list[dict]) -> str:
     other_name = stats["other_name"]
-    transcript = "\n".join(f"[{message.get('message_id', '未编号')}] {format_message_line(message, other_name)}" for message in chunk)
+    transcript = format_chunk_transcript(chunk, other_name)
     return f"""只阅读下面这个连续聊天分块，并抽取紧凑结构化证据。
-
-分块: {chunk_index}/{total_chunks}
-时间: {chunk[0]['time_str']} ~ {chunk[-1]['time_str']}
-消息数: {len(chunk)}
 
 硬性输出规则:
 1. 只输出一个合法 JSON 对象。
@@ -166,13 +208,12 @@ def build_chunk_prompt(stats: dict, chunk_index: int, total_chunks: int, chunk: 
 5. 不预设性别、恋爱、暧昧或关系目标；只写本分块证据。
 6. 分析性表述统一使用“对方/此人/该对象/对象昵称”，禁止使用“他/她/ta”代称；只有直接引用原文时可以保留原文中的代词。
 7. evidence 必须是某一条文本消息中连续、逐字一致的原话，不加引号、不改写、不拼接多条消息；展示的 \\n 在 JSON 字符串内用换行转义表示。
-8. 各引文条目可增加 source_message_ids 字段，值为唯一来源消息编号的数组（如 ["M_..."]）；重复原话必须提供该编号。不要生成 evidence_id 或伪造来源。
+8. 各引文条目可增加 source_message_ids 字段，复制本块消息头短编号（如 ["m1"]）；重复原话必须提供编号。编号只在本块内有效，不要生成 evidence_id 或伪造来源。
+9. 人物信号只分析对方；“我”的自述不能当作对方的语言、情绪或性格。互动特征须指出对方的回应或行为。
 
 JSON 对象格式:
 {{
   "schema_version": "{EVIDENCE_SCHEMA_VERSION}",
-  "chunk_index": {chunk_index},
-  "time_range": {{"start": "{chunk[0]['time_str']}", "end": "{chunk[-1]['time_str']}"}},
   "events": [
     {{"time": "时间或范围", "summary": "事实/推断/假设/存疑 + 简短概括", "evidence": "短证据", "confidence": "high|medium|low"}}
   ],
@@ -187,8 +228,14 @@ JSON 对象格式:
   ],
   "uncertainties": [
     {{"question": "不能判断的问题", "reason": "证据不足原因"}}
-  ]
+  ],
+  "chunk_index": {chunk_index},
+  "time_range": {{"start": "{chunk[0]['time_str']}", "end": "{chunk[-1]['time_str']}"}}
 }}
+
+分块: {chunk_index}/{total_chunks}
+时间: {chunk[0]['time_str']} ~ {chunk[-1]['time_str']}
+消息数: {len(chunk)}
 
 聊天原文:
 {transcript}

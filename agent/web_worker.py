@@ -17,6 +17,8 @@ from analysis_service import analyze_conversation
 OUTPUTS = {
     'analysis': ('analysis_file', '关系分析', 'markdown'),
     'persona': ('persona_file', '人物侧写', 'markdown'),
+    'analysis_claims': ('analysis_claims_file', '关系结论账本', 'json'),
+    'persona_claims': ('persona_claims_file', '人物结论账本', 'json'),
     'evidence': ('evidence_ledger_file', '结构化证据', 'json'),
     'summary': ('phase_summary_file', '阶段总结', 'markdown'),
     'coverage': ('coverage_summary_file', '覆盖说明', 'markdown'),

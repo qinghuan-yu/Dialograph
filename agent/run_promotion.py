@@ -11,7 +11,8 @@ from analysis_types import AnalysisArtifacts, RunPaths
 
 OUTPUT_KEYS = ('chunk_dir', 'evidence_dir', 'chunk_manifest_file',
                'coverage_summary_file', 'evidence_ledger_file', 'evidence_summary_file',
-               'phase_summary_file', 'analysis_file', 'analysis_meta_file')
+               'phase_summary_file', 'analysis_file', 'analysis_meta_file',
+               'analysis_claims_file', 'analysis_input_file')
 
 
 def promote_successful_run(artifacts: AnalysisArtifacts, run_paths: RunPaths) -> None:

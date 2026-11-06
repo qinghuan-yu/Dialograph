@@ -20,7 +20,8 @@ class PromotionTests(unittest.TestCase):
         self.run['run_dir'].mkdir()
         for key in ('chunk_dir', 'evidence_dir', 'chunk_manifest_file',
                     'coverage_summary_file', 'evidence_ledger_file', 'evidence_summary_file',
-                    'phase_summary_file', 'analysis_file', 'analysis_meta_file'):
+                    'phase_summary_file', 'analysis_file', 'analysis_meta_file',
+                    'analysis_claims_file', 'analysis_input_file'):
             src, dst = root / 'run' / key, root / 'published' / key
             dst.parent.mkdir(exist_ok=True)
             if key.endswith('_dir'):
@@ -50,7 +51,7 @@ class PromotionTests(unittest.TestCase):
     def test_mid_publish_failure_restores_old_files_directories_and_pointer(self):
         import os
         real_replace = os.replace
-        for failure_step in range(1, 21):
+        for failure_step in range(1, 25):
             with self.subTest(failure_step=failure_step):
                 count = 0
                 def fail_once(src, dst):

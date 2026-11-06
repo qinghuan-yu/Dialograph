@@ -42,18 +42,28 @@ def balanced_items(documents, key, limit):
                        for item in items if isinstance(item, dict)])
     # 块数超过预算时均匀覆盖时间轴，而非仅保留最早的块。
     groups = [group for group in groups if group]
-    if limit <= 0 or not groups:
+    if not groups:
+        return []
+    if limit is None:
+        return [item for group in groups for item in group]
+    if limit <= 0:
         return []
     if len(groups) > limit:
         if limit == 1:
             groups = [groups[-1]]
         else:
             groups = [groups[round(i * (len(groups) - 1) / (limit - 1))] for i in range(limit)]
-    selected = []
+    selected_pairs = []
     for depth in range(max(map(len, groups))):
-        for group in groups:
-            if depth < len(group):
-                selected.append(group[depth])
-                if len(selected) == limit:
-                    return selected
-    return selected
+        candidates = [idx for idx, group in enumerate(groups) if depth < len(group)]
+        remaining = limit - len(selected_pairs)
+        if len(candidates) > remaining:
+            if remaining == 1:
+                candidates = [candidates[(len(candidates) - 1) // 2]]
+            else:
+                candidates = [candidates[round(i * (len(candidates) - 1) / (remaining - 1))] for i in range(remaining)]
+        selected_pairs.extend((idx, depth) for idx in candidates)
+        if len(selected_pairs) >= limit:
+            break
+    selected_pairs.sort()
+    return [groups[idx][depth] for idx, depth in selected_pairs]

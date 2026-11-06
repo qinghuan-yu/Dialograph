@@ -1,15 +1,27 @@
-"""报告上下文构建与经过审计的人物侧写发布。"""
+"""报告上下文构建、统一公共材料前缀与经过审计的人物侧写发布。"""
 from __future__ import annotations
 
+import json
+import re
 import tempfile
 from pathlib import Path
 from artifact_audit import audit_artifacts
-from llm_client import generate_marked_report
+from report_framework import build_report_system_prompt
+from chunk_evidence import format_evidence_summary
+from evidence_grounding import GROUNDING_VERSION
+from llm_client import call_llm_with_retry
+from llm_usage import usage_operation
 from report_output import write_report
 from run_promotion import publish_files
 from workflow_state import report_identity
 from privacy_redaction import redact_artifact_call
 from prompt_budget import (limit_text_bytes, budget_evidence_summary, budget_phase_summaries)
+from report_context import select_evidence_context, source_repetition_notes, EvidenceContext
+from claim_ledger import ReportInput, claim_contract, context_catalog, generate_claims, render_claim_report, VERSION as CLAIM_VERSION
+from claim_retrieval import retrieve_claim_context, retrieval_notes
+from evidence_grounding import digest
+from claim_semantic_review import REVIEW_INSTRUCTIONS
+
 
 def load_evidence_summary(artifacts: dict) -> str:
     summary_file = artifacts.get("evidence_summary_file")
@@ -19,82 +31,100 @@ def load_evidence_summary(artifacts: dict) -> str:
 
 
 FINAL_STATS_SUMMARY_MAX_BYTES = 5000
-FINAL_EVIDENCE_SUMMARY_MAX_BYTES = 6000
+FINAL_EVIDENCE_SUMMARY_MAX_BYTES = 24000
 FINAL_COVERAGE_SUMMARY_MAX_BYTES = 2500
 FINAL_PHASE_SUMMARY_MAX_BYTES = 12000
+FINAL_RETRIEVAL_NOTES_MAX_BYTES = 4000
 FINAL_REPORT_MAX_OUTPUT_TOKENS = 4800
 PERSONA_REPORT_MAX_OUTPUT_TOKENS = 4800
 
-
-def build_final_prompt(
+def _prepare_shared_materials(
     name: str,
     stats_summary: str,
     coverage_summary: str,
     evidence_summary: str,
     phase_summaries: list[str],
-) -> str:
+    *,
+    ledger: dict | None = None,
+    review_questions: list[dict] | None = None,
+) -> tuple[str, EvidenceContext]:
     stats_summary = limit_text_bytes(stats_summary, FINAL_STATS_SUMMARY_MAX_BYTES)
-    joined = budget_phase_summaries(phase_summaries, FINAL_PHASE_SUMMARY_MAX_BYTES)
-    evidence_summary = budget_evidence_summary(evidence_summary, FINAL_EVIDENCE_SUMMARY_MAX_BYTES)
     coverage_summary = limit_text_bytes(coverage_summary, FINAL_COVERAGE_SUMMARY_MAX_BYTES)
-    return f"""请基于以下全局统计、结构化证据摘要和阶段总结，生成一份克制、证据导向的最终分析报告。
+    joined = budget_phase_summaries(phase_summaries, FINAL_PHASE_SUMMARY_MAX_BYTES)
+
+    use_full_ledger = (
+        ledger is not None
+        and bool(ledger.get('documents'))
+        and all(doc.get('grounding_version') == GROUNDING_VERSION for doc in ledger['documents'])
+        and (review_questions is not None or '- schema: ' in evidence_summary or '- 总数 ' in evidence_summary)
+    )
+    if use_full_ledger and review_questions is not None:
+        context = retrieve_claim_context(ledger, review_questions)
+        context = context.with_selected_ids(set(context.retrieval['source_message_ids']))
+    elif use_full_ledger:
+        context = select_evidence_context(evidence_summary + '\n' + joined, ledger, select_from_ledger=True)
+        full_summary = format_evidence_summary(ledger['documents'], max_items_per_type=None)
+        omitted_ids = {
+            eid for info in context.narrowed_units.values() for eid in info['omitted_evidence_ids']
+        }
+        priority_ids = context.context_ids | omitted_ids
+        evidence_summary = budget_evidence_summary(
+            full_summary,
+            FINAL_EVIDENCE_SUMMARY_MAX_BYTES,
+            priority_ids=priority_ids,
+        )
+        summary_ids = set(re.findall(r'\bE_[0-9a-f]{32}\b', evidence_summary + '\n' + joined))
+        summary_ids.update(eid for eid in context.context_ids if eid.startswith('M_'))
+        context = context.with_selected_ids(summary_ids)
+    else:
+        evidence_summary = budget_evidence_summary(evidence_summary, FINAL_EVIDENCE_SUMMARY_MAX_BYTES)
+        context = (
+            select_evidence_context(evidence_summary + '\n' + joined, ledger)
+            if ledger is not None
+            else EvidenceContext('本次未提供可回填的原文账本。', set(), set())
+        )
+
+    source_context = context.text
+    retrieval_text = (limit_text_bytes(retrieval_notes(context.retrieval), FINAL_RETRIEVAL_NOTES_MAX_BYTES)
+                      if context.retrieval is not None else '')
+    source_only = context.retrieval is not None
+    repetition_text = source_repetition_notes(ledger, context.source_positions) if source_only else ''
+    catalog = '' if source_only else context_catalog(context.context_ids, ledger)
+    derived_materials = '' if source_only else f"""以下是结构化证据摘要：
+
+{evidence_summary}
+
+以下是按预算选择的阶段材料：
+
+{joined}
+
+"""
+    source_rules = ('本轮按完整会话原文直接形成结论，引用使用原文行的P_序号。先选与判断逐句对应的原文，再写判断及解释。'
+                    '支持、反证与限制均按当前判断核验。解释中的新增动作也须引用其自身原文。'
+                    '涉及失误或冲突时，先写实际发生的行为、主体与影响，再分别说明道歉、补救动作和已知结果。'
+                    '前后回应有变化时按时间说明过程。样本数量、情境描述及总结须与各条具体结论一致。'
+                    '检索覆盖计数仅用于说明选材范围。\n') if source_only else ''
+    reference_rules = ('原文行的P_序号是本轮引用入口。每个具体动作都引用其自身原话，程序核对来源并转换为稳定编号。'
+                       if source_only else
+                       '事实与推断须引用 evidence_id，逐字复制完整的 E_ 加 32 位十六进制编号，或完整窗口目录列出的完整M编号。存疑条目不是已证实事实，须单列。')
+    shared_prefix = f"""请基于以下公共分析材料，按文末的具体任务指令和结论输出协议生成报告。
+
+{source_rules}
 
 对象：{name}
 
-写作标准：
-1. 参考法证式分析，不要写空话套话。
-2. 每个大结论都要写支持证据、反证、边界条件。
-3. 要明确区分长期模式、阶段性模式、一次性事件。
-4. 可以细，但不能越界读心。
-5. 若证据不足，明确写【存疑】。
-6. 输出要信息密度高，不要展开成长篇散文；每节优先写最能支撑结论的 3 到 5 点。
-7. 全量覆盖说明记录抽取阶段处理的范围；报告输入经过预算选择，省略内容不能当作已被模型审阅，不得声称逐条核验全部证据。
-8. “结构化证据摘要”是从每个分块的 JSON 证据块汇总而来。最终结论应优先绑定这些证据条目，并同时检查反证与存疑。
-   事实与推断须引用 evidence_id，使用完整的 E_ 加 32 位十六进制编号，逐字复制，不缩写、不用省略号，不引用消息编号或分块编号；存疑条目不是已证实事实，单列。
-9. 不预设对方性别、性取向、关系目标或恋爱/暧昧前提；亲密或暧昧只作为证据充分时的可选模型。
-10. 除直接引用原文外，全文必须使用“对方/此人/该对象/对象昵称”称呼分析对象；不要使用“他/她/ta/男方/女方”等带性别预设的代称。
-
-请严格按以下结构输出 Markdown：
-
-# {name} 聊天关系分析报告
-
-标题后直接进入正文，将必要的不确定性写在对应判断处。
-
-## 一、互动概况
-- 3 到 5 条，覆盖频率、主动性、话题控制、关键转折
-
-## 二、对方的表达风格
-- 3 到 5 条，覆盖语言风格、情绪表达、严肃/玩笑模式切换
-
-## 三、对方的互动模式
-- 3 到 5 条，覆盖关心/追问/记忆/回应脆弱表达/任务协作/边界
-
-## 四、对方在这段关系中的可能定位
-- 用表格评估最相关的 5 到 7 个模型，不必覆盖所有模型
-- 每行必须包含：支持证据、反证、可信度
-
-## 五、对方可能的动机逻辑
-- 给出 3 种解释
-- 每种都包含：支持证据、反证、可信度、还需要什么信息验证
-
-## 六、对方在你面前呈现出的性格倾向
-- 4 到 6 条，覆盖主动性、共情、边界、情绪稳定性、投入方式、回避倾向等
-
-## 七、你自己的误判风险
-- 3 到 5 条，覆盖稀缺性滤镜、投射、特殊关系放大、情境性互动误判、选择性注意等
-- 要直接指出哪些判断可能站不住脚
-
-## 八、总结
-### 1. 最稳妥的结论
-### 2. 中等可信的判断
-### 3. 不能下结论的部分
-### 4. 低风险验证关系类型或互动边界的建议
-
-格式要求：
-1. 全文使用【事实】【推断】【假设】【存疑】四类标记。
-2. 每个章节给出概括性证据即可，不要长段复述原文。
-3. 写得具体但受控，避免超过必要长度。
-4. 最后一行必须是：<!-- END_FINAL_REPORT -->
+公共写作与核验标准：
+1. 参考法证式分析，不要写空话套话；可以细，但不能越界读心，不做人格审判或医学化诊断。
+2. 每个大结论写支持依据、相关反证的复核结果及情境限制，允许未找到相关反证；反证须明确削弱当前判断的哪一部分，时间、场景等限制单列。区分【事实】【推断】【假设】【存疑】以及长期、阶段和局部范围；证据不足写【存疑】。
+3. 输出要信息密度高，优先保留最能支撑结论的判断，避免重复。
+4. 全量覆盖说明记录抽取阶段处理的范围；本次提示词经过预算选择，省略内容不能当作已被模型审阅的证据，不得声称逐条核验全部证据，也不能仅据抽取覆盖率宣称长期模式。
+5. {reference_rules} 原文编号仅证明出处，发送者立场及语义角色须逐命题核查。
+6. 不预设对方性别、性取向、关系目标或恋爱/暧昧前提；亲密或暧昧只作为证据充分时的可选模型。
+7. 除直接引用原文外，全文使用“对方/此人/该对象/对象昵称”称呼分析对象；不要使用“他/她/ta/男方/女方”等带性别预设的代称。
+8. 按摘要标注的引文发送方归属言语；“我”的自述不能写成对方说过的话，不能直接据此评估对方的表达风格或性格。关系报告中的转述也须按此核对；互动判断须有对方回应或行为依据。
+9. 抽取条目的分类、signal/against、阶段总结和关系报告均为待复核的初步或二手解释，不是事实；逐字绑定只核对出处。优先结合连续原文检查这些解释是否成立，反证必须与所反驳的判断相关。
+10. 不能把省略或未回填当作不存在；未回填且需要上下文的解释保留存疑。短消息不等于浅交流，应按连续会话判断，不能用短消息长度判断交流深度。
+11. 对方的单次或单场景表现不能直接推成稳定人格；没有足够跨场景或跨分块重复依据时保留局部范围或未知，不得把单次表现写成稳定人格或评价为能力偏弱。
 
 以下是全局统计：
 
@@ -104,84 +134,91 @@ def build_final_prompt(
 
 {coverage_summary}
 
-以下是结构化证据摘要：
+{derived_materials}{source_context}{retrieval_text}{repetition_text}{catalog}"""
+    return shared_prefix, context
 
-{evidence_summary}
 
-以下是按预算选择的阶段材料：
-
-{joined}
+def prepare_final_input(
+    name: str,
+    stats_summary: str,
+    coverage_summary: str,
+    evidence_summary: str,
+    phase_summaries: list[str],
+    *, ledger: dict | None = None, review_questions: list[dict] | None = None,
+) -> ReportInput:
+    shared_prefix, context = _prepare_shared_materials(
+        name,
+        stats_summary,
+        coverage_summary,
+        evidence_summary,
+        phase_summaries,
+        ledger=ledger,
+        review_questions=review_questions,
+    )
+    task_tail = """
+## 本次具体任务：关系与行为模式分析报告
+按下方结论协议选择有证据的章节，每条只保留一个独立判断。
+优先描述实际互动、冲突与支持的过程，再评估原文支持的关系解释。
+总结可合并已有结论；只有原文提出了待解决的问题时才给对应验证建议。
 """
+    return ReportInput(
+        shared_prefix + task_tail + claim_contract('analysis', raw_sources=context.retrieval is not None),
+        context.evidence_ids,
+        context.context_ids,
+        source_positions=context.source_positions, retrieval=context.retrieval,
+    )
 
 
-def build_persona_prompt(
+def build_final_prompt(*args, **kwargs) -> str:
+    return prepare_final_input(*args, **kwargs).prompt
+
+
+def prepare_persona_input(
     name: str,
     stats_summary: str,
     coverage_summary: str,
     evidence_summary: str,
     phase_summaries: list[str],
     relation_report: str,
-) -> str:
-    stats_summary = limit_text_bytes(stats_summary, FINAL_STATS_SUMMARY_MAX_BYTES)
-    coverage_summary = limit_text_bytes(coverage_summary, FINAL_COVERAGE_SUMMARY_MAX_BYTES)
-    evidence_summary = budget_evidence_summary(evidence_summary, FINAL_EVIDENCE_SUMMARY_MAX_BYTES)
-    joined = budget_phase_summaries(phase_summaries, FINAL_PHASE_SUMMARY_MAX_BYTES)
-    relation_report = limit_text_bytes(relation_report, 8000)
-    return f"""请基于以下统计摘要、阶段总结和已经完成的关系分析报告，进一步建立对方的人物侧写。
+    *, ledger: dict | None = None, review_questions: list[dict] | None = None,
+) -> ReportInput:
+    shared_prefix, context = _prepare_shared_materials(
+        name,
+        stats_summary,
+        coverage_summary,
+        evidence_summary,
+        phase_summaries,
+        ledger=ledger,
+        review_questions=review_questions,
+    )
+    relation_report = limit_text_bytes(relation_report, 2000)
+    task_tail = f"""
+## 本次具体任务：对方人物侧写建模报告
+1. 输出一份独立的人物形象建模报告，而不是重复关系分析报告；重点回答“这个人，在与你互动时，呈现出怎样稳定的人物形象”。
+2. 写出边界、互动风格、情绪表达、投入方式、回避方式、关系需求等层面；必须优先参考人物建模证据、反证与存疑，只有跨分块重复出现的信号才可写成稳定倾向。
+3. 如果关系分析报告里的某个判断证据不够，要主动降级，不要照搬；动机与需求均作为待验证假设，人物倾向描述在这段互动中的表现，未获得跨场景证据时保留局部范围。
 
-对象：{name}
-
-任务目标：
-1. 输出一份独立的人物形象建模报告，而不是重复关系分析报告。
-2. 重点回答“这个人，在与你互动时，呈现出怎样稳定的人物形象”。
-3. 要有证据支撑，要区分【事实】【推断】【假设】【存疑】。
-4. 要写出边界、互动风格、情绪表达、投入方式、回避方式、关系需求等层面。
-5. 如果关系分析报告里的某个判断证据不够，要主动降级，不要照搬。
-6. 全量覆盖说明描述抽取范围；本次提示词经过预算选择，不能把省略材料当作已审阅的证据，也不能仅据抽取覆盖率宣称长期模式。
-7. 必须优先参考“结构化证据摘要”中的人物建模证据、反证与存疑；只有跨分块重复出现的信号才可写成稳定倾向。
-   事实与推断须引用 evidence_id，使用完整的 E_ 加 32 位十六进制编号，逐字复制，不缩写、不用省略号，不引用消息编号或分块编号；存疑条目不是已证实事实，单列。
-8. 不预设对方性别；除直接引用原文外，全文使用“对方/此人/该对象/对象昵称”，不要使用“他/她/ta/男方/女方”等带性别预设的代称。
-
-请按以下结构输出 Markdown：
-
-# 人物侧写：{name}
-
-标题后直接进入正文，将必要的不确定性写在对应判断处。
-
-## 一、基本画像
-## 二、性格与表达风格
-## 三、互动模式与边界感
-## 四、动机与需求
-## 五、对方在你面前的倾向性总结
-## 六、不能判断的部分
-## 七、对用户最重要的认知
-
-补充要求：
-1. 基本画像和倾向性总结尽量用表格。
-2. 动机与需求部分用“动机假设 / 支持证据 / 反证 / 可信度”的表格。
-3. 语言要像“证据支撑的人物侧写”，不是普通读后感。
-4. 最后一行必须是：<!-- END_PERSONA_REPORT -->
-
-以下是统计摘要：
-
-{stats_summary}
-
-以下是全量覆盖说明：
-
-{coverage_summary}
-
-以下是结构化证据摘要：
-
-{evidence_summary}
-
-以下是阶段总结：
-
-{joined}
-
-以下是已经完成的关系分析报告：
+以下是关系报告的二手解释，仅作待复核线索：
 
 {relation_report}
 """
+    if context.retrieval is not None:
+        task_tail = """
+## 本次具体任务：对方人物侧写建模报告
+根据完整入选会话独立归纳对方可核验的表达方式、互动习惯与边界。
+优先说明具体场景中的表现及其依据，重复倾向必须有对应的跨场景支持。
+动机与需求须有方向正确的依据，证据不足的维度可省略或明确存疑。
+"""
+    return ReportInput(
+        shared_prefix + task_tail + claim_contract('persona', raw_sources=context.retrieval is not None),
+        context.evidence_ids,
+        context.context_ids,
+        source_positions=context.source_positions, retrieval=context.retrieval,
+    )
+
+
+def build_persona_prompt(*args, **kwargs) -> str:
+    return prepare_persona_input(*args, **kwargs).prompt
 
 
 def load_phase_summaries(artifacts: dict) -> list[str]:
@@ -197,6 +234,7 @@ def generate_persona_report(
     persona_skill_prompt: str,
     config,
     timeout: int,
+    *, report_system_prompt: str | None = None,
 ) -> str:
     if not artifacts["analysis_file"].exists():
         raise FileNotFoundError(f"缺少关系分析文件: {artifacts['analysis_file']}")
@@ -209,26 +247,42 @@ def generate_persona_report(
         if artifacts["coverage_summary_file"].exists()
         else "未找到覆盖说明文件；请优先依据阶段总结中的分块编号和统计摘要判断证据范围。"
     )
-    persona_prompt = build_persona_prompt(
+    ledger = json.loads(artifacts['evidence_ledger_file'].read_text(encoding='utf-8'))
+    retrieval = None
+    if artifacts['analysis_claims_file'].exists():
+        retrieval = json.loads(artifacts['analysis_claims_file'].read_text(encoding='utf-8')).get('retrieval')
+        if retrieval is not None and (retrieval['source_id'] != ledger['source_id'] or retrieval['ledger_sha256'] != digest(ledger)):
+            raise ValueError('关系报告的检索计划与人物侧写来源不一致。')
+    prepared = prepare_persona_input(
         artifacts["name"],
         artifacts["stats_summary"],
         coverage_summary,
         load_evidence_summary(artifacts),
         load_phase_summaries(artifacts),
         relation_report,
+        ledger=ledger,
+        review_questions=retrieval['questions'] if retrieval is not None else None,
     )
+    system_prompt = (report_system_prompt if report_system_prompt is not None else
+                     build_report_system_prompt(persona_skill_prompt=persona_skill_prompt))
     print("- 生成对方人物侧写...")
-    persona_report = generate_marked_report(
-        config,
-        persona_skill_prompt,
-        persona_prompt,
-        timeout,
-        marker="<!-- END_PERSONA_REPORT -->",
-        label="人物侧写",
-        initial_max_tokens=PERSONA_REPORT_MAX_OUTPUT_TOKENS,
-    )
+    with usage_operation('persona'):
+        claims = generate_claims(prepared, ledger, 'persona', lambda prompt: call_llm_with_retry(
+            config,
+            system_prompt,
+            prompt,
+            timeout,
+            max_tokens=PERSONA_REPORT_MAX_OUTPUT_TOKENS,
+        ), attempt_dir=artifacts['support_dir'] / 'claim_attempts_persona',
+            review_request=(lambda prompt: call_llm_with_retry(config, REVIEW_INSTRUCTIONS, prompt, timeout,
+                                                              max_tokens=4800)) if retrieval is not None else None,
+            action_review_request=(lambda prompt: call_llm_with_retry(config, REVIEW_INSTRUCTIONS, prompt, timeout,
+                                                                     max_tokens=4800)) if retrieval is None else None)
+    persona_report = render_claim_report(claims, artifacts['name'])
     with tempfile.TemporaryDirectory(prefix=".persona-", dir=artifacts["support_dir"]) as temporary:
-        staged = {key: Path(temporary) / artifacts[key].name for key in ("persona_file", "persona_meta_file")}
+        staged = {key: Path(temporary) / artifacts[key].name for key in ("persona_file", "persona_meta_file", "persona_claims_file", "persona_input_file")}
+        staged['persona_claims_file'].write_text(json.dumps(claims, ensure_ascii=False, indent=2), encoding='utf-8')
+        staged['persona_input_file'].write_text(prepared.prompt, encoding='utf-8')
         write_report(
             staged["persona_file"],
             staged["persona_meta_file"],
@@ -236,9 +290,10 @@ def generate_persona_report(
             source="api",
             script_name="agent/run_workflow.py",
             model=config.model,
-            note=f"基于全量分块阶段总结与关系建模报告生成，覆盖 {artifacts['message_count']} 条有效消息",
+            note=f"根据本次入选材料生成人物侧写。全量抽取覆盖 {artifacts['message_count']} 条有效消息",
             extra_metadata={
-                "reuse_identity": report_identity(artifacts, persona_skill_prompt, config, persona=True),
+                "claim_schema_version": CLAIM_VERSION,
+                "reuse_identity": report_identity(artifacts, persona_skill_prompt, config, persona=True, report_system_prompt=system_prompt),
                 "report_file": str(artifacts["persona_file"]),
                 "message_count": artifacts["message_count"],
                 "analysis_file": str(artifacts["analysis_file"]),
@@ -250,7 +305,7 @@ def generate_persona_report(
                 "diagnostics_file": str(artifacts["diagnostics_file"]),
             },
         )
-        audit = audit_artifacts({**artifacts, **staged}, require_persona=True)
+        audit = audit_artifacts({**artifacts, **staged}, require_persona=True, require_claims=True)
         if not audit.ok:
             raise ValueError("人物侧写审计失败，未替换旧报告：" + str(audit.errors))
         publish_files({artifacts[key]: value for key, value in staged.items()})

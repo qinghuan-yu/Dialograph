@@ -1,4 +1,5 @@
 """本轮回归：保护已有结果，拒绝无效输入与错误缓存。"""
+from claim_fixtures import claim_response, with_reviews
 import io
 import json
 import sys
@@ -232,7 +233,7 @@ class ResumeTests(unittest.TestCase):
             failed = artifact_audit.AuditResult('test')
             failed.add_error('test failure')
             with patch.object(chunk_evidence, 'generate_chunk_analysis', side_effect=generated), \
-                 patch.object(workflow, 'generate_marked_report', return_value='report <!-- END_FINAL_REPORT -->'), \
+                 patch.object(workflow, 'call_llm_with_retry', side_effect=with_reviews([claim_response('report', report_kind='analysis')])), \
                  patch.object(workflow, 'audit_artifacts', return_value=failed):
                 with self.assertRaisesRegex(ValueError, '审计'):
                     workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
@@ -245,12 +246,12 @@ class ResumeTests(unittest.TestCase):
             def generated(config, prompt, timeout, meta, **kwargs):
                 return text, chunk_evidence.normalize_chunk_evidence(text, meta), 1200
             with patch.object(chunk_evidence, 'generate_chunk_analysis', side_effect=generated), \
-                 patch.object(workflow, 'generate_marked_report', side_effect=RuntimeError('final stop')):
+                 patch.object(workflow, 'call_llm_with_retry', side_effect=RuntimeError('final stop')):
                 with self.assertRaisesRegex(RuntimeError, 'final stop'):
                     workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_size=2, chunk_sleep=0))
             run = next(artifacts['runs_dir'].iterdir())
             with patch.object(chunk_evidence, 'generate_chunk_analysis', side_effect=AssertionError('cached chunks must not call api')) as chunk_api, \
-                 patch.object(workflow, 'generate_marked_report', return_value='report <!-- END_FINAL_REPORT -->'):
+                 patch.object(workflow, 'call_llm_with_retry', side_effect=with_reviews([claim_response('report', report_kind='analysis')])):
                 workflow.run_single_workflow(artifacts, 'skill', CONFIG, 5, resume_run_id=run.name, settings=chunking.ChunkSettings(chunk_sleep=0))
             self.assertEqual(chunk_api.call_count, 0)
             saved = json.loads((run / 'run_metadata.json').read_text(encoding='utf-8'))

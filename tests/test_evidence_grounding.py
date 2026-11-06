@@ -1,4 +1,5 @@
 """只用合成消息验证身份、引文锚定、隔离和缓存审计。"""
+from claim_fixtures import claim_response, with_reviews
 import copy
 import json
 import sys
@@ -83,7 +84,7 @@ class GroundingPipelineTests(unittest.TestCase):
 
     def run_pipeline(self, payload, **options):
         with patch.object(llm_client, 'call_llm', return_value=json.dumps(payload, ensure_ascii=False)), \
-             patch.object(workflow, 'generate_marked_report', return_value='报告 <!-- END_FINAL_REPORT -->'):
+             patch.object(workflow, 'call_llm_with_retry', side_effect=with_reviews([claim_response('报告', report_kind='analysis')])):
             workflow.run_single_workflow(self.artifacts, 'test skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_sleep=0, **options))
         return json.loads(self.artifacts['evidence_ledger_file'].read_text(encoding='utf-8'))
 
@@ -103,7 +104,7 @@ class GroundingPipelineTests(unittest.TestCase):
         payload = evidence(events=[event('明天再谈吧'), event('凭空编造的原话', '不应进入报告的解释'),
                                    event('[图片消息]', '不能把占位符当原话'), event('系统提示')])
         with patch.object(llm_client, 'call_llm', return_value=json.dumps(payload, ensure_ascii=False)), \
-             patch.object(workflow, 'generate_marked_report', return_value='报告 <!-- END_FINAL_REPORT -->') as final:
+             patch.object(workflow, 'call_llm_with_retry', side_effect=with_reviews([claim_response('报告', report_kind='analysis')])) as final:
             workflow.run_single_workflow(self.artifacts, 'skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
         ledger = json.loads(self.artifacts['evidence_ledger_file'].read_text(encoding='utf-8'))
         statuses = [item.get('grounding', {}).get('status') for item in ledger['documents'][0]['events']]
@@ -200,7 +201,7 @@ class GroundingPipelineTests(unittest.TestCase):
     def test_tampered_cached_anchor_is_rejected_before_metadata_or_api_changes(self):
         payload = evidence(events=[event('明天再谈吧')])
         with patch.object(llm_client, 'call_llm', return_value=json.dumps(payload)), \
-             patch.object(workflow, 'generate_marked_report', side_effect=RuntimeError('stop final')):
+             patch.object(workflow, 'call_llm_with_retry', side_effect=RuntimeError('stop final')):
             with self.assertRaisesRegex(RuntimeError, 'stop final'):
                 workflow.run_single_workflow(self.artifacts, 'skill', CONFIG, 5, settings=chunking.ChunkSettings(chunk_sleep=0))
         run = next(self.artifacts['runs_dir'].iterdir())
@@ -232,10 +233,10 @@ class GroundingPipelineTests(unittest.TestCase):
                 (folder / input_name).write_bytes((fixtures / filename).read_bytes())
                 options = {'mode': 'full', 'input_name': input_name}
                 payload = evidence(events=[event('测试第二行'), event('并不存在的合成引文')])
-                responses = [json.dumps(payload), '报告 <!-- END_FINAL_REPORT -->',
-                             '侧写 <!-- END_PERSONA_REPORT -->']
+                responses = [json.dumps(payload), claim_response('报告', report_kind='analysis'),
+                             claim_response('侧写', report_kind='persona')]
                 with patch('web_worker.load_llm_config', return_value=CONFIG):
-                    with patch.object(llm_client, 'call_llm', side_effect=responses):
+                    with patch.object(llm_client, 'call_llm', side_effect=with_reviews(responses)):
                         result = run_job(self.root, folder, options, lambda event: None)
                     ledger = json.loads((folder / result['files']['evidence']['path']).read_text(encoding='utf-8'))
                     source = ledger['documents'][0]['events'][0]['grounding']['source_refs'][0]

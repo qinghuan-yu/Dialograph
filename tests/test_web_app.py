@@ -1,3 +1,4 @@
+from claim_fixtures import claim_response, with_reviews
 import json
 import sys
 import tempfile
@@ -81,13 +82,17 @@ class WebAppTests(unittest.TestCase):
         job_dir.mkdir(parents=True)
         (job_dir / 'input.json').write_text(json.dumps(sample_chat()), encoding='utf-8')
         chunk = json.dumps({key: [] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
-        responses = [chunk, '# 关系报告\n测试结果。\n<!-- END_FINAL_REPORT -->',
-                     '# 人物侧写\n测试结果。\n<!-- END_PERSONA_REPORT -->']
+        responses = [chunk, claim_response('关系报告 测试结果。', report_kind='analysis'),
+                     claim_response('人物侧写 测试结果。', report_kind='persona')]
         config = SimpleNamespace(api_base='https://test.invalid', api_key='test-only', model='test-model')
-        with patch('web_worker.load_llm_config', return_value=config), patch('llm_client.call_llm', side_effect=responses) as llm:
+        with patch('web_worker.load_llm_config', return_value=config), patch('llm_client.call_llm', side_effect=with_reviews(responses)) as llm:
             result = run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
-        self.assertEqual(llm.call_count, 3)
-        self.assertEqual(set(result['files']), {'analysis', 'persona', 'evidence', 'summary', 'coverage', 'manifest', 'stats', 'diagnostics', 'preprocess'})
+        self.assertEqual(llm.call_count, 5)
+        self.assertEqual(set(result['files']), {'analysis', 'persona', 'evidence', 'summary', 'coverage', 'manifest', 'stats', 'diagnostics', 'preprocess', 'analysis_claims', 'persona_claims'})
+        for kind in ('analysis', 'persona'):
+            saved = json.loads((job_dir / result['files'][kind + '_claims']['path']).read_text(encoding='utf-8'))
+            self.assertEqual(saved['report_kind'], kind)
+            self.assertEqual(len(saved['claims']), 1)
         manifest = json.loads((job_dir / result['files']['manifest']['path']).read_text(encoding='utf-8'))
         self.assertEqual(sum(row['message_count'] for row in manifest), 4)
         with patch('web_worker.load_llm_config', return_value=config), patch('llm_client.call_llm', side_effect=AssertionError('must reuse completed reports')):
@@ -121,34 +126,39 @@ class WebAppTests(unittest.TestCase):
         data = sample_chat()
         source.write_text(json.dumps(data), encoding='utf-8')
         chunk = json.dumps({key: [] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
-        responses = [chunk, 'relation <!-- END_FINAL_REPORT -->', 'persona <!-- END_PERSONA_REPORT -->']
+        responses = [chunk, claim_response('relation', report_kind='analysis'), claim_response('persona', report_kind='persona')]
         config = SimpleNamespace(api_base='https://test.invalid', api_key='test-only', model='test-model')
         with patch('web_worker.load_llm_config', return_value=config):
-            with patch('llm_client.call_llm', side_effect=responses):
+            with patch('llm_client.call_llm', side_effect=with_reviews(responses)):
                 run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
             data['messages'][0]['content'] = '改变消息'
             source.write_text(json.dumps(data), encoding='utf-8')
-            with patch('llm_client.call_llm', side_effect=responses) as llm:
+            with patch('llm_client.call_llm', side_effect=with_reviews(responses)) as llm:
                 run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
-                self.assertEqual(llm.call_count, 3)
+                self.assertEqual(llm.call_count, 5)
 
-    def test_persona_prompt_change_regenerates_only_persona(self):
+    def test_shared_persona_framework_change_invalidates_both_reports(self):
         job_dir = self.root / 'job'
         job_dir.mkdir()
         (job_dir / 'input.json').write_text(json.dumps(sample_chat()), encoding='utf-8')
         chunk = json.dumps({key: [] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
-        responses = [chunk, 'relation <!-- END_FINAL_REPORT -->', 'persona <!-- END_PERSONA_REPORT -->']
+        responses = [chunk, claim_response('relation', report_kind='analysis'), claim_response('persona', report_kind='persona')]
         config = SimpleNamespace(api_base='https://test.invalid', api_key='test-only', model='test-model')
         original_loader = report_generation.load_skill_prompt
         def changed_prompt(path):
             return original_loader(path) + (' changed' if path.name == 'PERSONA_SKILL.md' else '')
         with patch('web_worker.load_llm_config', return_value=config):
-            with patch('llm_client.call_llm', side_effect=responses):
+            with patch('llm_client.call_llm', side_effect=with_reviews(responses)):
                 run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
             with patch('report_generation.load_skill_prompt', side_effect=changed_prompt), \
-                 patch('llm_client.call_llm', return_value='updated <!-- END_PERSONA_REPORT -->') as llm:
+                 patch('llm_client.call_llm', side_effect=with_reviews([chunk, claim_response('updated relation'),
+                    claim_response('updated persona', report_kind='persona')])) as llm:
                 run_job(self.root, job_dir, {'mode': 'full'}, lambda event: None)
-                self.assertEqual(llm.call_count, 1)
+                self.assertEqual(llm.call_count, 5)
+                system_a = llm.call_args_list[1].kwargs['system_prompt']
+                system_b = llm.call_args_list[3].kwargs['system_prompt']
+                self.assertEqual(system_a, system_b)
+                self.assertIn(' changed', system_a)
 
     def test_one_job_at_a_time_and_cancel_then_resume(self):
         source = self.service.import_chat('test.json', json.dumps(sample_chat()).encode('utf-8'))

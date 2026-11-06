@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from evidence_validation import validate_evidence, FIELDS, SUMMARY_LIMIT
 from evidence_grounding import validate_grounded_ledger, GROUNDING_VERSION, LEDGER_VERSION
+from claim_ledger import audit_claim_report, VERSION as CLAIM_VERSION
 
 
 FINAL_MARKER = "<!-- END_FINAL_REPORT -->"
@@ -153,7 +154,7 @@ def audit_manifest(path: Path, result: AuditResult, expected_messages: int | Non
     return len(manifest)
 
 
-def audit_artifacts(artifacts: dict, require_persona: bool = False) -> AuditResult:
+def audit_artifacts(artifacts: dict, require_persona: bool = False, *, require_claims: bool = False) -> AuditResult:
     result = AuditResult(name=str(artifacts.get("name") or artifacts.get("safe_name") or "unknown"))
 
     audit_report(Path(artifacts["analysis_file"]), FINAL_MARKER, "关系分析报告", result)
@@ -170,6 +171,22 @@ def audit_artifacts(artifacts: dict, require_persona: bool = False) -> AuditResu
         artifacts.get("message_count"),
     )
     evidence_count = audit_evidence_ledger(Path(artifacts["evidence_ledger_file"]), result, artifacts.get('messages'))
+    for kind in (('analysis', 'persona') if require_persona else ('analysis',)):
+        metadata_path = artifacts.get(kind + '_meta_file')
+        try:
+            metadata = read_json(Path(metadata_path)) if metadata_path and Path(metadata_path).exists() else {}
+            if not isinstance(metadata, dict):
+                raise ValueError('报告来源元数据必须为对象。')
+            claim_path = artifacts.get(kind + '_claims_file')
+            if require_claims or metadata.get('claim_schema_version') == CLAIM_VERSION or (claim_path and Path(claim_path).exists()):
+                count = audit_claim_report(Path(artifacts[kind + '_claims_file']),
+                    Path(artifacts[kind + '_file']), read_json(Path(artifacts['evidence_ledger_file'])),
+                    artifacts['name'], Path(artifacts[kind + '_input_file']), kind)
+                result.stats[kind + '_claims'] = count
+            else:
+                result.add_warning(f'{kind} 为旧报告，尚未进行结论账本校验。')
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            result.add_error(f'{kind} 结论账本审计失败：{exc}')
     if manifest_count is not None and evidence_count is not None and manifest_count != evidence_count:
         result.add_error(f"分块覆盖清单数量 {manifest_count} != 结构化证据数量 {evidence_count}")
 
@@ -203,6 +220,12 @@ def audit_support_dir(support_dir: Path, output_dir: Path) -> AuditResult:
         "chunk_dir": support_dir / "分块分析",
         "evidence_dir": support_dir / "结构化证据",
         "message_count": None,
+        "analysis_meta_file": support_dir / f"报告来源_分析_{safe_name}.json",
+        "persona_meta_file": support_dir / f"报告来源_人物侧写_{safe_name}.json",
+        "analysis_claims_file": support_dir / 'claim_ledger_analysis.json',
+        "persona_claims_file": support_dir / 'claim_ledger_persona.json',
+        "analysis_input_file": support_dir / 'report_input_analysis.md',
+        "persona_input_file": support_dir / 'report_input_persona.md',
     }
     return audit_artifacts(artifacts, require_persona=True)
 
