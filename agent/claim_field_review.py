@@ -118,6 +118,7 @@ def build_field_review_input(claim, prepared, ledger):
     context = context.split('\n\n待复核结论及逐字引用', 1)[0]
     material = {'scope_note': '先列本条引用所属完整入选会话，同时附其他入选会话，须检查遗漏的相反事实。',
                 'messages': [], 'omitted_selected_messages': 0}
+    focused_material = {}
     if prepared.retrieval is not None:
         positions = {row['source']['position'] for row in citations}
         sessions = prepared.retrieval['selected_sessions']
@@ -126,16 +127,20 @@ def build_field_review_input(claim, prepared, ledger):
             focused = sessions
         numbers = {number for number, message in enumerate(ledger['source_messages'])
                    if any(start <= message['position'] <= end for start, end in focused)}
-        material['messages'] = _source_rows(ledger['source_messages'], numbers)
         visible = set(prepared.retrieval['source_positions'])
         other_numbers = {number for number, message in enumerate(ledger['source_messages'])
                          if message['position'] in visible and number not in numbers}
-        material['other_selected_messages'] = _source_rows(ledger['source_messages'], other_numbers)
+        # 原文次序不随当前结论变化，提供可复用的完整前缀；定位信息放在其后。
+        material['scope_note'] = '完整入选原文按消息序号排列，须核对同事件后续与相反事实。'
+        material['messages'] = _source_rows(ledger['source_messages'], numbers | other_numbers)
+        focused_material['citation_session_positions'] = [ledger['source_messages'][number]['position']
+                                                        for number in sorted(numbers)]
     else:
         material['scope_note'] = '保留生成阶段的全部入选原文窗口及其覆盖说明。'
         material['selected_context'] = context
-    material['repetition_context'] = repetition_context(ledger['source_messages'], citations)
+    focused_material['repetition_context'] = repetition_context(ledger['source_messages'], citations)
     prompt = (background + '复核原文材料\n' + json.dumps(material, ensure_ascii=False)
+              + '\n本条定位及同文邻文\n' + json.dumps(focused_material, ensure_ascii=False)
               + '\n本条草稿及登记引用\n' + json.dumps(data, ensure_ascii=False))
     return prompt, data, aliases
 

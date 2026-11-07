@@ -33,6 +33,29 @@ def passing_checks(data):
 
 
 class ClaimFieldReviewTests(unittest.TestCase):
+    def test_different_claims_share_the_complete_selected_source_prefix(self):
+        from os.path import commonprefix
+        from claim_field_review import build_field_review_input
+        from claim_fixtures import claim_response
+        from claim_ledger import compile_claims
+        from report_generation import prepare_final_input
+        from test_claim_retrieval import source
+        ledger = source({78: '我会问小赵', 120: '另一场独立交流'}, session_break=80)
+        questions = [{'proposition': '合成命题', 'support_queries': ['问小赵'],
+                      'challenge_queries': ['独立交流']}]
+        prepared = prepare_final_input('合成', '', '', '', [], ledger=ledger, review_questions=questions)
+        prompts = []
+        for position in (79, 121):
+            raw = claim_response('该原话仅作局部观察。', kind='fact', supporting_evidence=[f'P_{position}'],
+                                 counter_review='not_found_in_selected')
+            compiled = compile_claims(raw, ledger, prepared, 'analysis')
+            prompts.append(build_field_review_input(compiled['claims'][0], prepared, ledger)[0])
+        prefix = commonprefix(prompts)
+        for message in ledger['source_messages']:
+            self.assertIn(json.dumps({key: message[key] for key in
+                ('position', 'sender', 'time_str', 'type', 'content')}, ensure_ascii=False), prefix)
+        self.assertNotIn('本条草稿及登记引用', prefix)
+
     def test_counter_failure_feedback_restores_the_generators_evidence_id(self):
         from claim_field_review import review_claim_fields
         from claim_semantic_review import SemanticReviewError
@@ -273,9 +296,10 @@ class ClaimFieldReviewTests(unittest.TestCase):
         self.assertEqual(data['registered_citations'][0]['source']['sender'], 'other')
         self.assertEqual(data['registered_citations'][0]['id'], 'P_79')
         self.assertEqual(list(aliases.values()), ['P_79'])
-        context = json.loads(prompt.split('复核原文材料\n', 1)[1].split('\n本条草稿及登记引用\n', 1)[0])
-        self.assertEqual([row['position'] for row in context['messages']], list(range(1, 81)))
-        self.assertEqual([row['position'] for row in context['other_selected_messages']], list(range(81, 141)))
+        context = json.loads(prompt.split('复核原文材料\n', 1)[1].split('\n本条定位及同文邻文\n', 1)[0])
+        focus = json.loads(prompt.split('\n本条定位及同文邻文\n', 1)[1].split('\n本条草稿及登记引用\n', 1)[0])
+        self.assertEqual([row['position'] for row in context['messages']], list(range(1, 141)))
+        self.assertEqual(focus['citation_session_positions'], list(range(1, 81)))
         self.assertEqual(context['omitted_selected_messages'], 0)
         self.assertEqual(compiled, before)
 
