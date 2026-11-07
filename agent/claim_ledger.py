@@ -13,12 +13,20 @@ from claim_compiler import (VERSION, LEGACY_VERSION, SECTIONS, MARKERS, KINDS, S
     ReportInput, claim_contract, context_catalog, compile_claims, _evidence_index, _coverage,
     _reference_map, _parse_response, _check_claim_text, _reviewed_references, _validate_claim)
 from claim_repair import apply_claim_revisions, build_repair_prompt
+from claim_human_review import HUMAN_REVIEW_MARKER, HUMAN_REVIEW_NOTICE, human_review_record
 
 
 def generate_claims(prepared, ledger, report_kind, request, *, attempt_dir, allow_repair=True, review_request=None,
-                    source_request=None, action_review_request=None, field_review=False):
+                    source_request=None, action_review_request=None, field_review=False, review_mode='model'):
     """初稿与语义修订各有一次格式纠错；语义只修订一次，未通过不发布。"""
     attempt_dir.mkdir(parents=True, exist_ok=True)
+    if review_mode not in ('model', 'human'):
+        raise ValueError('报告确认方式必须为human或model。')
+    if review_mode == 'human':
+        if source_request is not None:
+            raise ValueError('人工确认模式不能与来源归属实验混用。')
+        prepared.prompt += '\n' + HUMAN_REVIEW_MARKER + '\n报告交由用户核对，仍须满足全部出处与结构约束。\n'
+        review_request, action_review_request, field_review = None, None, False
     if review_request is None and action_review_request is not None and FACTS_MARKER in prepared.prompt:
         review_request = action_review_request
     if review_request is not None:
@@ -58,6 +66,9 @@ def generate_claims(prepared, ledger, report_kind, request, *, attempt_dir, allo
                 (attempt_dir / f'attempt_{attempt:02d}_merged.json').write_text(
                     json.dumps(payload, ensure_ascii=False, indent=2), encoding='utf-8')
             compiled = compile_claims(json.dumps(payload, ensure_ascii=False), ledger, prepared, report_kind)
+            if review_mode == 'human':
+                compiled['human_review'] = human_review_record(compiled)
+                return compiled
             reviewer = review_request
             if REVIEW_MARKER in prepared.prompt or any(claim.get('actions') for claim in compiled['claims']):
                 reviewer = reviewer or action_review_request
@@ -104,6 +115,8 @@ def render_claim_report(ledger, name):
     kind = ledger['report_kind']
     title = f'{name} 聊天关系分析报告' if kind == 'analysis' else f'人物侧写：{name}'
     lines = ['# ' + title]
+    if 'human_review' in ledger:
+        lines.append('\n' + HUMAN_REVIEW_NOTICE)
     facts_enabled = ledger['schema_version'] == VERSION
     if facts_enabled:
         if ledger['source_facts']:

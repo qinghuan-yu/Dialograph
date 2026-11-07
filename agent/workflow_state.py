@@ -32,6 +32,7 @@ def run_identity(artifacts, skill_prompt, config, *, report_system_prompt=None):
     hasher.update((Path(__file__).parent / 'claim_compiler.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_repair.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_review_basis.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'claim_human_review.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_facts.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_semantic_review.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_field_review.py').read_bytes())
@@ -46,6 +47,7 @@ def run_identity(artifacts, skill_prompt, config, *, report_system_prompt=None):
     hasher.update(b'\0report-context\0' + json.dumps([
         getattr(config, 'report_context_bytes', 48000),
         getattr(config, 'report_context_mode', 'retrieval')]).encode('utf-8'))
+    hasher.update(b'\0report-review\0' + str(getattr(config, 'report_review_mode', 'model')).encode('utf-8'))
     return {'input_sha256': hashlib.sha256(source + b'\0' + parsed).hexdigest(),
             'pipeline_sha256': hasher.hexdigest()}
 

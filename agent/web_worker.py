@@ -73,6 +73,10 @@ def run_job(workspace: Path, job_dir: Path, options: dict, emit) -> dict:
     output_dir = job_dir / 'output'
     output_dir.mkdir(exist_ok=True)
     config = load_llm_config(workspace)
+    review_mode = options.get('review_mode', 'model')
+    if not isinstance(review_mode, str) or review_mode not in ('human', 'model'):
+        raise ValueError('报告确认方式必须为human或model。')
+    config.report_review_mode = review_mode
     if options['mode'] == 'full' and not config.api_key:
         raise ValueError('尚未配置 LLM_API_KEY。请在项目根目录 .env 中配置后重试。')
     emit({'type': 'progress', 'stage': 'prepare', 'message': '正在解析消息、排序并计算会话统计。'})
@@ -97,6 +101,8 @@ def run_job(workspace: Path, job_dir: Path, options: dict, emit) -> dict:
         result = {'stats': artifacts['stats'], 'diagnostics': artifacts['parse_diagnostics'], 'files': files, 'warnings': warnings}
         (job_dir / 'result.json').write_text(json.dumps(result, ensure_ascii=False), encoding='utf-8')
         complete_message = '预处理完成。' if options['mode'] == 'preprocess' else '分析完成，结果已通过完整性检查。'
+        if options['mode'] == 'full' and review_mode == 'human':
+            complete_message = '两份报告已生成，出处与结构检查通过，内容待人工确认。请点击引用回查原文。'
         if warnings:
             complete_message += f' 有 {len(warnings)} 项证据覆盖提示，请查看运行日志。'
         emit({'type': 'progress', 'stage': 'complete', 'message': complete_message})

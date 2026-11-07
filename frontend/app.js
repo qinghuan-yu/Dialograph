@@ -5,6 +5,7 @@ const state = { token: "", config: null, jobs: [], selected: null, output: null,
 const labels = { queued: "等待启动", running: "正在运行", completed: "已完成", failed: "失败", cancelled: "已停止", interrupted: "已中断" };
 const stageOrder = ["prepare", "chunks", "merge", "analysis", "persona", "audit"];
 const active = job => job && ["queued", "running"].includes(job.status);
+const jobStatus = job => job.status === "completed" && job.mode === "full" && job.review_mode === "human" ? "待人工确认" : labels[job.status];
 let lastJobsSnapshot = "";
 let logView = { job: null, events: [], follow: true };
 
@@ -48,6 +49,7 @@ async function loadFiles(selectId) {
 function updateForm() {
   const full = $("input[name=mode]:checked").value === "full", busy = state.jobs.some(active);
   $("#model-notice").hidden = !full;
+  $("#review-mode-field").hidden = !full;
   $("#model-notice").textContent = state.config?.configured
     ? `完整分析会将对话分块发送至 ${state.config.provider}，使用 ${state.config.model}，可能产生模型费用。`
     : "尚未配置模型密钥，请在项目根目录 .env 中设置 LLM_API_KEY 后重启服务。仍可运行仅预处理。";
@@ -62,7 +64,7 @@ function renderHistory() {
   state.jobs.slice(0, 12).forEach(job => {
     const button = element("button", undefined, "history-item"); button.type = "button";
     button.setAttribute("aria-pressed", String(job.id === state.selected));
-    const meta = element("small", `${job.mode === "full" ? "完整分析" : "预处理"} · ${labels[job.status]} · ${job.created.replace("T", " ")}`);
+    const meta = element("small", `${job.mode === "full" ? "完整分析" : "预处理"} · ${jobStatus(job)} · ${job.created.replace("T", " ")}`);
     meta.dataset.status = job.status;
     button.append(element("strong", job.name), meta);
     button.addEventListener("click", () => selectJob(job.id)); list.append(button);
@@ -131,7 +133,7 @@ function renderJob(job) {
   const searchable = job.status === "completed" && job.mode === "full" && !!job.files?.evidence;
   if (state.evidence.job !== job.id || !searchable) resetEvidence(searchable ? job.id : null);
   $("#evidence-panel").hidden = !searchable;
-  $("#job-status").textContent = labels[job.status]; $("#job-status").dataset.status = job.status; $("#job-name").textContent = job.name;
+  $("#job-status").textContent = jobStatus(job); $("#job-status").dataset.status = job.status; $("#job-name").textContent = job.name;
   $("#live-message").textContent = job.message || "正在启动…";
   $("#live-message").classList.toggle("error-text", job.status === "failed");
   $("#cancel-button").hidden = !active(job);
@@ -362,7 +364,7 @@ $("#analysis-form").addEventListener("submit", async event => {
   event.preventDefault(); state.submitting = true; updateForm(); showError("#form-error", null);
   try {
     const redactionTerms = $("#redaction-terms").value.split(/\r?\n/).map(value => value.trim()).filter(Boolean);
-    const job = await post("/api/jobs", { chat_id: $("#conversation").value, mode: $("input[name=mode]:checked").value, chunk_size: Number($("#chunk-size").value), timeout: Number($("#timeout").value), redaction_terms: redactionTerms });
+    const job = await post("/api/jobs", { chat_id: $("#conversation").value, mode: $("input[name=mode]:checked").value, chunk_size: Number($("#chunk-size").value), timeout: Number($("#timeout").value), redaction_terms: redactionTerms, review_mode: $("#review-mode").value || "human" });
     await refreshJobs(); selectJob(job.id);
   } catch (error) { showError("#form-error", error); }
   finally { state.submitting = false; updateForm(); }

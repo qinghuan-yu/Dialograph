@@ -175,7 +175,7 @@ def needs_retrieval(prepared, ledger):
 
 def generate_reviewed_claims(prepared, ledger, report_kind, request, reprepare, plan_request,
                              *, attempt_dir, plan_identity, review_request=None, source_request=None,
-                             field_review=False):
+                             field_review=False, review_mode='model'):
     """缺原文时先规划并重建材料；显式传入复核请求时允许一次定向纠正。"""
     if prepared.retrieval is not None or not needs_retrieval(prepared, ledger):
         return prepared, generate_claims(prepared, ledger, report_kind, request, attempt_dir=attempt_dir,
@@ -183,7 +183,7 @@ def generate_reviewed_claims(prepared, ledger, report_kind, request, reprepare, 
                                           review_request=review_request if prepared.retrieval is not None else None,
                                           action_review_request=review_request if prepared.retrieval is None else None,
                                           source_request=source_request if prepared.retrieval is not None else None,
-                                          field_review=field_review)
+                                          field_review=field_review, review_mode=review_mode)
     attempt_dir.mkdir(parents=True, exist_ok=True)
     plan_prompt = build_review_plan_prompt(ledger)
     identity = digest([ledger, plan_prompt, plan_identity])
@@ -203,5 +203,5 @@ def generate_reviewed_claims(prepared, ledger, report_kind, request, reprepare, 
     prepared = reprepare(questions)
     claims = generate_claims(prepared, ledger, report_kind, request, attempt_dir=attempt_dir,
                              allow_repair=review_request is not None, review_request=review_request,
-                             source_request=source_request, field_review=field_review)
+                             source_request=source_request, field_review=field_review, review_mode=review_mode)
     return prepared, claims

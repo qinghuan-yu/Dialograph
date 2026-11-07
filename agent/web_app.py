@@ -113,6 +113,9 @@ class WebService:
                 mode = request.get('mode')
                 if not isinstance(mode, str) or mode not in {'preprocess', 'full'}:
                     raise ValueError('请选择预处理或完整分析。')
+                review_mode = request.get('review_mode', 'human')
+                if not isinstance(review_mode, str) or review_mode not in ('human', 'model'):
+                    raise ValueError('请选择人工确认或模型辅助复核。')
                 chunk_size = request.get('chunk_size', 1200)
                 timeout = request.get('timeout', 600)
                 if type(chunk_size) is not int or not 1 <= chunk_size <= 10000:
@@ -132,8 +135,9 @@ class WebService:
                 input_name = 'input' + source.suffix.lower()
                 (job_dir / input_name).write_bytes(raw)
                 options = {'mode': mode, 'chunk_size': chunk_size, 'timeout': timeout, 'input_name': input_name,
-                           'redaction_terms': redaction_terms}
-                state = {'id': job_id, 'name': source.name, 'mode': mode, 'created': timestamp(), 'events': []}
+                           'redaction_terms': redaction_terms, 'review_mode': review_mode}
+                state = {'id': job_id, 'name': source.name, 'mode': mode, 'review_mode': review_mode,
+                         'created': timestamp(), 'events': []}
             if options['mode'] == 'full' and not load_llm_config(self.root).api_key:
                 raise ValueError('未配置模型密钥。请填写项目根目录 .env，或先运行仅预处理。')
             (job_dir / 'request.json').write_text(json.dumps(options), encoding='utf-8')

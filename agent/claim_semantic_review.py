@@ -183,6 +183,9 @@ def review_claims(compiled, prepared, evidence_index, request, directory, *, sou
 
 
 def audit_semantic_review(stored, prompt, *, prepared=None, evidence_index=None, source_messages=()):
+    from claim_human_review import audit_human_review
+    if audit_human_review(stored, prompt):
+        return
     from claim_source_review import SOURCE_MARKER, audit_source_review
     from claim_field_review import (FIELD_REVIEW_MARKER, FIELD_REVIEW_VERSION, audit_field_review,
                                     V2_FIELD_REVIEW_MARKER, V2_FIELD_REVIEW_VERSION,

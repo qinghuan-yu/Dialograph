@@ -20,6 +20,8 @@ from chunking import (CHUNK_REQUEST_TIMEOUT, CHUNK_REQUEST_SLEEP_SECONDS,
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="批量运行聊天记录分析工作流")
     parser.add_argument('--redact-terms-file', type=Path, help='额外脱敏词：UTF-8逐行文本或JSON字符串数组')
+    parser.add_argument('--review-mode', choices=('human', 'model'), default='human',
+                        help='报告确认方式：human生成待人工确认的报告（默认）；model另请求模型复核，仍可能漏检')
     parser.add_argument(
         "targets",
         nargs="*",
@@ -99,6 +101,7 @@ def main() -> int:
     output_dir.mkdir(exist_ok=True)
 
     config = load_llm_config(workspace)
+    config.report_review_mode = args.review_mode
     if not config.api_key:
         print("LLM_API_KEY 未设置，无法执行工作流分析。请先填写工作区根目录 .env")
         return 1

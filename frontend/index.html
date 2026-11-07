@@ -70,6 +70,13 @@
                 </div>
               </fieldset>
               <p class="model-notice" id="model-notice" hidden></p>
+              <label for="review-mode" id="review-mode-field" hidden>报告确认方式
+                <select id="review-mode">
+                  <option value="human" selected>人工确认 · 生成后回查引用（推荐）</option>
+                  <option value="model">模型辅助复核 · 增加调用，仍需人工核对</option>
+                </select>
+                <span class="label-sub">人工确认模式保留出处和结构检查，报告内容由你核对。</span>
+              </label>
               <details class="advanced">
                 <summary>高级分析参数</summary>
                 <div class="advanced-fields">

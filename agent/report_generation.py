@@ -282,7 +282,8 @@ def generate_persona_report(
             max_tokens=PERSONA_REPORT_MAX_OUTPUT_TOKENS,
         ), attempt_dir=artifacts['support_dir'] / 'claim_attempts_persona',
             review_request=lambda prompt: call_llm_with_retry(config, FIELD_REVIEW_INSTRUCTIONS, prompt, timeout,
-                max_tokens=4800, json_mode=review_json_mode(config)), field_review=True)
+                max_tokens=4800, json_mode=review_json_mode(config)), field_review=True,
+            review_mode=getattr(config, 'report_review_mode', 'model'))
     persona_report = render_claim_report(claims, artifacts['name'])
     with tempfile.TemporaryDirectory(prefix=".persona-", dir=artifacts["support_dir"]) as temporary:
         staged = {key: Path(temporary) / artifacts[key].name for key in ("persona_file", "persona_meta_file", "persona_claims_file", "persona_input_file")}

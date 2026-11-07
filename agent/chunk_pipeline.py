@@ -142,7 +142,8 @@ def run_single_workflow(
             attempt_dir=run_paths['run_dir'] / 'claim_attempts_analysis',
             plan_identity=digest([config.model, config.api_base, getattr(config, 'thinking', None), report_system_prompt]),
             review_request=lambda prompt: call_llm_with_retry(config, FIELD_REVIEW_INSTRUCTIONS, prompt, timeout,
-                max_tokens=4800, json_mode=review_json_mode(config)), field_review=True)
+                max_tokens=4800, json_mode=review_json_mode(config)), field_review=True,
+            review_mode=getattr(config, 'report_review_mode', 'model'))
     run_paths['analysis_input_file'].write_text(prepared.prompt, encoding='utf-8')
     run_paths['analysis_claims_file'].write_text(json.dumps(claims, ensure_ascii=False, indent=2), encoding='utf-8')
     report = render_claim_report(claims, artifacts['name'])

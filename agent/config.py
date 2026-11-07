@@ -22,6 +22,7 @@ class LLMConfig:
     min_output_tokens: int = 0
     report_context_bytes: int = 48000
     report_context_mode: str = 'retrieval'
+    report_review_mode: str = 'model'
 
 
 def report_context_options(config):

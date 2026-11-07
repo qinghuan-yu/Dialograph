@@ -429,3 +429,33 @@ test("月度图分开显示双方数量，快捷入口展开对应面板", () =>
   assert.equal(h.get("#evidence-panel").open, true);
   assert.equal(h.get("#evidence-query").focused, true);
 });
+
+test("人工确认任务完成后标为待确认，报告下载保留提醒与引用", () => {
+  const h = harness();
+  h.context.renderJob({ id: "human-job", mode: "full", review_mode: "human", status: "completed",
+    stage: "complete", name: "合成任务", events: [], files: {} });
+  assert.match(h.get("#job-status").textContent, /待人工确认/);
+  const id = "M_" + "1".repeat(32);
+  const text = `# 报告\n\n> 待人工确认：请回查原文。\n\n## 模型解释\n\n观察 ${id}`;
+  const metadata = { references: { [id]: { status: "resolved", kind: "source", canonical: id } } };
+  const target = new h.Node(); h.context.renderMarkdown(text, target, metadata);
+  assert.match(target.textContent, /待人工确认/);
+  assert.ok(h.created.some(node => node.className === "report-citation"));
+  const exported = h.context.formatReportDownload(text, metadata);
+  assert.match(exported, /待人工确认/);
+  assert.match(exported, /\[\^e1\]/);
+});
+
+test("启动完整分析发送所选报告确认方式", async () => {
+  const h = harness(), sent = [];
+  h.get("input[name=mode]:checked").value = "full";
+  h.get("#review-mode").value = "model";
+  h.get("#conversation").value = "synthetic";
+  h.get("#chunk-size").value = "1200"; h.get("#timeout").value = "600";
+  h.context.fetch = async (url, options = {}) => {
+    if (options.method === "POST") { sent.push(JSON.parse(options.body)); return h.reply({ id: "job" }); }
+    return h.reply([]);
+  };
+  await h.get("#analysis-form").listeners.submit({ preventDefault() {} });
+  assert.equal(sent[0].review_mode, "model");
+});
