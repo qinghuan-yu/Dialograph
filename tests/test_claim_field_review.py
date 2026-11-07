@@ -33,6 +33,60 @@ def passing_checks(data):
 
 
 class ClaimFieldReviewTests(unittest.TestCase):
+    def test_counter_failure_feedback_restores_the_generators_evidence_id(self):
+        from claim_field_review import review_claim_fields
+        from claim_semantic_review import SemanticReviewError
+        from claim_fixtures import claim_response
+        from claim_ledger import compile_claims
+        from report_generation import prepare_final_input
+        from test_report_context_budget import ledger
+        source = ledger()
+        support = source['documents'][0]['events'][0]['evidence_id']
+        counter = source['documents'][0]['counter_evidence'][0]['evidence_id']
+        prepared = prepare_final_input('合成', '', '', support + '\n' + counter, [], ledger=source)
+        response = claim_response('对方在本次协作中给予回应。', kind='inference',
+            supporting_evidence=[support], counter_review='found',
+            counter_evidence=[{'evidence_id': counter, 'target': '给予回应', 'reason': '合成反向证据。'}])
+        compiled = compile_claims(response, source, prepared, 'analysis')
+
+        def respond(prompt):
+            data = json.loads(prompt.split('\n本条草稿及登记引用\n', 1)[1])
+            self.assertEqual(data['counter_evidence'][0]['evidence_id'], 'Q_2')
+            checks = passing_checks(data)
+            checks['counter_checks'][0].update(directly_contradicts=False, reason='只限制情境，没有相反事实。')
+            return json.dumps(checks)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(SemanticReviewError) as failure:
+                review_claim_fields(compiled, prepared, source, respond, Path(temporary), cache={})
+        self.assertIn('evidence_id=' + counter, str(failure.exception))
+        self.assertNotIn('evidence_id=Q_2', str(failure.exception))
+
+    def test_revision_feedback_identifies_the_failed_field_and_check(self):
+        from claim_field_review import review_claim_fields
+        from claim_semantic_review import SemanticReviewError
+        from claim_fixtures import claim_response
+        from claim_ledger import compile_claims
+        from report_generation import prepare_final_input
+        from test_claim_retrieval import source, QUESTIONS
+        ledger = source()
+        prepared = prepare_final_input('合成', '', '', '', [], ledger=ledger, review_questions=QUESTIONS)
+        compiled = compile_claims(claim_response(), ledger, prepared, 'analysis')
+
+        def respond(prompt):
+            data = json.loads(prompt.split('\n本条草稿及登记引用\n', 1)[1])
+            checks = passing_checks(data)
+            row = next(row for row in checks['field_checks'] if row['field'] == 'context_review')
+            row.update(content_supported=False, reason='回应顺序需要修正。')
+            return json.dumps(checks)
+
+        with tempfile.TemporaryDirectory() as temporary:
+            with self.assertRaises(SemanticReviewError) as failure:
+                review_claim_fields(compiled, prepared, ledger, respond, Path(temporary), cache={})
+        self.assertIn('context_review', str(failure.exception))
+        self.assertIn('content_supported', str(failure.exception))
+        self.assertIn('回应顺序需要修正', str(failure.exception))
+
     def test_legacy_checks_remain_auditable_but_cannot_satisfy_the_new_input_gate(self):
         from claim_field_review import (FIELD_REVIEW_MARKER, LEGACY_FIELD_REVIEW_MARKER,
                                         LEGACY_FIELD_REVIEW_VERSION, statement_fields)

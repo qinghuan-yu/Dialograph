@@ -202,7 +202,7 @@ def _validate_claim(claim, ledger, prepared, report_kind, index, messages, *, fa
         if eid not in prepared.evidence_ids or eid not in index:
             reference_errors.append(f'结论引用未知或未入选证据：{label} 位于 ' + '、'.join(fields)
                                     + '。只能使用本次提供的可引用编号，不能为占位记录自行编造编号。')
-    if reference_errors:
+    if reference_errors and any(eid not in prepared.evidence_ids or eid not in index for eid in all_ids):
         raise ValueError('\n'.join(reference_errors))
     if any(eid.startswith('M_') and eid not in prepared.context_ids for eid in all_ids):
         raise ValueError('原文消息引用必须具有完整连续上下文。')
@@ -220,6 +220,14 @@ def _validate_claim(claim, ledger, prepared, report_kind, index, messages, *, fa
             raise ValueError('结论原文绑定不一致。')
         if eid in support:
             refs.extend(bound)
+    if reference_errors:
+        # 引文已绑定，角色重叠不妨碍同时检查独立的动作和时间错误。
+        if facts_enabled:
+            try:
+                validate_fact_fields(claim, index)
+            except ValueError as exc:
+                reference_errors.append(str(exc))
+        raise ValueError('\n'.join(reference_errors))
     uncertain = claim['kind'] == 'uncertain'
     if not uncertain and not support:
         raise ValueError('非存疑结论必须有支持证据。')
@@ -244,10 +252,22 @@ def _validate_claim(claim, ledger, prepared, report_kind, index, messages, *, fa
                              f'范围标签为{claim["scope"]}。须补充合格支持或缩小判断本身。')
     validated = {**claim, 'coverage': coverage}
     if facts_enabled:
-        validated['time_intervals'] = validate_fact_fields(claim, index)
-        check_time_prose(claim)
+        fact_errors = []
+        try:
+            validated['time_intervals'] = validate_fact_fields(claim, index)
+        except ValueError as exc:
+            fact_errors.extend(str(exc).splitlines())
+        try:
+            check_time_prose(claim)
+        except ValueError as exc:
+            fact_errors.extend(str(exc).splitlines())
         if QUOTE_MARKER in prepared.prompt:
-            check_quoted_prose(claim, index)
+            try:
+                check_quoted_prose(claim, index)
+            except ValueError as exc:
+                fact_errors.extend(str(exc).splitlines())
+        if fact_errors:
+            raise ValueError('\n'.join(dict.fromkeys(fact_errors)))
     return validated
 
 
@@ -316,8 +336,7 @@ def compile_claims(response, ledger, prepared, report_kind, *, schema_version=VE
                 try:
                     check_time_prose(claim)
                 except ValueError as time_error:
-                    if str(time_error) != details:
-                        details += '\n' + str(time_error)
+                    details = '\n'.join(dict.fromkeys(details.splitlines() + str(time_error).splitlines()))
             errors.append(f'第 {number} 条结论：{details}')
             continue
         identity = json.dumps([ledger['source_id'], report_kind, validated], ensure_ascii=False, sort_keys=True)

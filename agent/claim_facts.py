@@ -72,11 +72,14 @@ def check_quoted_prose(claim, evidence_index):
     texts = [(field, claim[field]) for field in ('text', 'context_review', 'uncertainty')]
     texts.extend((f'{field}[{n}].reason', row['reason'])
                  for field in ('counter_evidence', 'limiting_evidence') for n, row in enumerate(claim[field]))
+    errors = []
     for field, text in texts:
         for match in re.finditer(r'“([^”]+)”|「([^」]+)」|"([^"]+)"', text):
             quoted = next(value for value in match.groups() if value is not None)
             if not any(quoted in original for original in quotes):
-                raise ValueError(f'{field}引语“{quoted}”不在本条引用中。补充该原话自身引用；概念或改写请用普通叙述，仍须核验含义。')
+                errors.append(f'{field}引语“{quoted}”不在本条引用中。补充该原话自身引用；概念或改写请用普通叙述，仍须核验含义。')
+    if errors:
+        raise ValueError('\n'.join(dict.fromkeys(errors)))
 
 
 def _validate_action(action, support, facts):

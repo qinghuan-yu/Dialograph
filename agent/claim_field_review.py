@@ -221,7 +221,14 @@ def review_claim_fields(compiled, prepared, ledger, request, directory, *, cache
         reviews.append({'claim_id': claim['claim_id'], 'material_sha256': identity, **checks})
         (folder / 'checks.json').write_text(json.dumps(reviews[-1], ensure_ascii=False, indent=2), encoding='utf-8')
         if result['verdict'] == 'revise':
-            failures[number] = '\n'.join(row['reason'] for row in result['failures'])
+            details = []
+            for row in result['failures']:
+                location = [f'{key}={row[key]}' for key in ('field', 'action_index') if key in row]
+                if 'evidence_id' in row:
+                    location.append('evidence_id=' + original_ids[row['evidence_id']])
+                failed_checks = [key for key, value in row.items() if value is False]
+                details.append(' '.join(location) + ' [' + ', '.join(failed_checks) + '] ' + row['reason'])
+            failures[number] = '\n'.join(details)
     if failures:
         description = '\n'.join(f'第 {number} 条结论 ' + reason for number, reason in failures.items())
         raise SemanticReviewError('逐字段独立复核要求修改\n' + description, failures)

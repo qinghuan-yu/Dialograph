@@ -89,6 +89,17 @@ class ClaimFactTests(unittest.TestCase):
         for detail in ('actions[0]', '主体', '对象', 'actions[1]', self.ids[1], 'time_links[0]'):
             self.assertIn(detail, error)
 
+    def test_duplicate_roles_do_not_hide_an_unregistered_action(self):
+        with self.assertRaises(ValueError) as caught:
+            self.compile(limiting_evidence=[{'evidence_id': self.ids[0], 'reason': '仅限该场景。'}],
+                actions=[dict(evidence_id=self.ids[1], quote='我已经发给小林了。',
+                              actor='我', target='小林', state='reported_done', confirmation=None)])
+        error = str(caught.exception)
+        self.assertIn('重复或重叠', error)
+        self.assertIn('limiting_evidence[0]', error)
+        self.assertIn('actions[0]', error)
+        self.assertIn('未登记为本条支持', error)
+
     def test_quoted_prose_requires_this_claims_own_citation(self):
         self.prepared.prompt += '\n## 逐字引语校验（v1）'
         for field in ('text', 'context_review', 'uncertainty'):
@@ -97,6 +108,26 @@ class ClaimFactTests(unittest.TestCase):
         self.compile(context_review='原话是“我准备把文件发给小林”。')
         self.compile(context_review='原话是「我准备把文件发给小林」。')
         self.compile(context_review='原话是“我已经发给小林了”。', supporting_evidence=[self.ids[1]])
+
+    def test_quote_errors_cover_all_narrative_fields_before_the_single_repair(self):
+        self.prepared.prompt += '\n## 逐字引语校验（v1）'
+        with self.assertRaises(ValueError) as caught:
+            self.compile(text='对方说“全部做完了”。', context_review='原话是“已经收到回复”。',
+                         uncertainty='尚不确定“问题解决了”。')
+        error = str(caught.exception)
+        for field in ('text', 'context_review', 'uncertainty'):
+            self.assertIn(field + '引语', error)
+
+    def test_action_time_and_quote_errors_are_reported_without_duplicate_time_feedback(self):
+        self.prepared.prompt += '\n## 逐字引语校验（v1）'
+        with self.assertRaises(ValueError) as caught:
+            self.compile(context_review='对方次日说“全部做完了”。',
+                actions=[dict(evidence_id=self.ids[1], quote='我已经发给小林了。',
+                              actor='我', target='小林', state='reported_done', confirmation=None)])
+        error = str(caught.exception)
+        for detail in ('actions[0]', '次日', 'context_review引语'):
+            self.assertIn(detail, error)
+        self.assertEqual(error.count('涉及具体时间'), 1)
 
     def test_quoted_prose_checks_counter_reasons_and_preserves_historical_inputs(self):
         self.compile(context_review='原话是“我已经发给小林了”。')
