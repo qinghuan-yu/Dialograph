@@ -69,50 +69,42 @@ def retrieve_claim_context(ledger, questions, *, max_bytes=CONTEXT_MAX_BYTES):
     messages = ledger['source_messages']
     index = {row['message_id']: n for n, row in enumerate(messages)}
     descriptions = {n: set() for n in range(len(messages))}
-    anchors = set()
     for doc in ledger['documents']:
         for category, fields in FIELDS.items():
             for item in doc[category]:
                 if item['grounding']['status'] != 'matched':
                     continue
                 n = index[item['grounding']['source_refs'][0]['message_id']]
-                if category != 'persona_signals' or messages[n]['sender'] == 'other':
-                    anchors.add(n)
                 descriptions[n].add(' '.join(str(item[field]) for field in fields
                                              if field not in ('confidence', 'direction', 'stability')).casefold())
     ranges = _ranges(set(range(len(messages))), messages, 4 * 3600)
     session_index = {n: number for number, (start, end) in enumerate(ranges) for n in range(start, end + 1)}
     citable = {session_index[n] for n, message in enumerate(messages) if message['type'] in TEXT_TYPES}
     raw = [row['content'].casefold() for row in messages]
-    queries, session_hits, session_scores = [], {}, {}
-    question_scores = {}
+    queries, matched_session_numbers, query_groups = [], set(), []
     for question_number, question in enumerate(questions, 1):
         seen_hits = set()
         for direction, field in (('support', 'support_queries'), ('challenge', 'challenge_queries')):
-            for term_number, term in enumerate(dict.fromkeys(question[field])):
+            for term in dict.fromkeys(question[field]):
                 needle = term.strip().casefold()
                 raw_hits = {n for n, text in enumerate(raw) if needle in text}
                 description_hits = {n for n, texts in descriptions.items() if any(needle in text for text in texts)}
                 hits = raw_hits | description_hits
-                key = f'Q{question_number}:{direction}:{term_number}'
                 weight = math.log1p(len(messages) / max(1, len(hits)))
-                for session in {session_index[n] for n in hits} & citable:
-                    session_hits.setdefault(session, set()).add(key)
-                    if frozenset(hits) not in seen_hits:
-                        scores = question_scores.setdefault(session, {})
-                        scores[question_number] = scores.get(question_number, 0.0) + weight
-                        session_scores[session] = session_scores.get(session, 0.0) + weight
+                matched_sessions = frozenset({session_index[n] for n in hits} & citable)
+                matched_session_numbers.update(matched_sessions)
+                if matched_sessions and frozenset(hits) not in seen_hits:
+                    query_groups.append((question_number, matched_sessions, weight))
                 seen_hits.add(frozenset(hits))
                 queries.append({'question': question_number, 'direction': direction, 'query': term,
                                 'hits': len(hits), 'positions': sorted(messages[n]['position'] for n in hits),
                                 'raw_hits': len(raw_hits), 'description_hits': len(description_hits)})
-    maxima = {q: max(scores.get(q, 0.0) for scores in question_scores.values())
-              for q in range(1, len(questions) + 1)} if question_scores else {}
-    sessions = [ReviewSession(*ranges[number], frozenset(hits), session_scores[number],
-                             tuple((q, value / maxima[q]) for q, value in question_scores[number].items()))
-                for number, hits in sorted(session_hits.items())]
+    session_numbers = {number: index for index, number in enumerate(sorted(matched_session_numbers))}
+    groups = [(question, frozenset(session_numbers[n] for n in matched), weight)
+              for question, matched, weight in query_groups]
+    sessions = [ReviewSession(*ranges[number]) for number in sorted(matched_session_numbers)]
     context = select_evidence_context('', ledger, max_bytes=max_bytes, select_from_ledger=True,
-                                      review_sessions=sessions)
+                                      review_sessions=sessions, review_query_groups=groups)
     visible = context.source_positions
     position_sessions = {message['position']: session_index[n] for n, message in enumerate(messages)}
     visible_sessions = {position_sessions[position] for position in visible}
@@ -136,7 +128,7 @@ def retrieve_claim_context(ledger, questions, *, max_bytes=CONTEXT_MAX_BYTES):
     metadata = {'schema_version': 'claim-retrieval-v1', 'source_id': ledger['source_id'],
                 'ledger_sha256': digest(ledger), 'questions': questions, 'queries': queries,
                 'source_positions': sorted(visible), 'context_max_bytes': max_bytes,
-                'selection_policy': 'proposition-balanced-v1', 'session_decisions': decisions,
+                'selection_policy': 'complete-query-balanced-v3', 'session_decisions': decisions,
                 'source_message_ids': sorted(eid for eid in context.context_ids if eid.startswith('M_')),
                 'source_aliases': {f'P_{message["position"]}': message['message_id'] for message in messages
                                    if message['position'] in visible and message['type'] in TEXT_TYPES},
@@ -170,14 +162,16 @@ def needs_retrieval(prepared, ledger):
 
 
 def generate_reviewed_claims(prepared, ledger, report_kind, request, reprepare, plan_request,
-                             *, attempt_dir, plan_identity, review_request=None, source_request=None):
+                             *, attempt_dir, plan_identity, review_request=None, source_request=None,
+                             field_review=False):
     """缺原文时先规划并重建材料；显式传入复核请求时允许一次定向纠正。"""
     if prepared.retrieval is not None or not needs_retrieval(prepared, ledger):
         return prepared, generate_claims(prepared, ledger, report_kind, request, attempt_dir=attempt_dir,
                                           allow_repair=prepared.retrieval is None or review_request is not None,
                                           review_request=review_request if prepared.retrieval is not None else None,
                                           action_review_request=review_request if prepared.retrieval is None else None,
-                                          source_request=source_request if prepared.retrieval is not None else None)
+                                          source_request=source_request if prepared.retrieval is not None else None,
+                                          field_review=field_review)
     attempt_dir.mkdir(parents=True, exist_ok=True)
     plan_prompt = build_review_plan_prompt(ledger)
     identity = digest([ledger, plan_prompt, plan_identity])
@@ -196,5 +190,6 @@ def generate_reviewed_claims(prepared, ledger, report_kind, request, reprepare, 
         cache.write_text(json.dumps({'identity': identity, 'questions': questions}, ensure_ascii=False, indent=2), encoding='utf-8')
     prepared = reprepare(questions)
     claims = generate_claims(prepared, ledger, report_kind, request, attempt_dir=attempt_dir,
-                             allow_repair=review_request is not None, review_request=review_request, source_request=source_request)
+                             allow_repair=review_request is not None, review_request=review_request,
+                             source_request=source_request, field_review=field_review)
     return prepared, claims

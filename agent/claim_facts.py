@@ -79,57 +79,78 @@ def check_quoted_prose(claim, evidence_index):
                 raise ValueError(f'{field}引语“{quoted}”不在本条引用中。补充该原话自身引用；概念或改写请用普通叙述，仍须核验含义。')
 
 
+def _validate_action(action, support, facts):
+    if (not isinstance(action, dict)
+            or set(action) != {'evidence_id', 'quote', 'actor', 'target', 'state', 'confirmation'}
+            or not isinstance(action['evidence_id'], str)
+            or not isinstance(action['state'], str) or action['state'] not in ACTION_STATES):
+        raise ValueError('动作判读须绑定本条支持引文及有效状态。')
+    if action['evidence_id'] not in support:
+        raise ValueError(f'动作编号{action["evidence_id"]}未登记为本条支持引文。须补充其支持引用或重新核对动作依据。')
+    original = facts[action['evidence_id']]
+    quote = action['quote']
+    if not isinstance(quote, str) or not quote.strip() or quote not in original['quote']:
+        raise ValueError('动作原话须逐字属于所引用的消息，不能借用相邻消息。')
+    errors = []
+    for field, label in (('actor', '主体'), ('target', '对象')):
+        value = action[field]
+        if value is not None and (not isinstance(value, str) or not value.strip() or value not in quote):
+            errors.append(f'动作{label}须是动作原话中的逐字指代，归属不明时填null。')
+    if errors:
+        raise ValueError('\n'.join(errors))
+    confirmation = action['confirmation']
+    if action['state'] != 'confirmed_result':
+        if confirmation is not None:
+            raise ValueError('结果确认依据仅用于confirmed_result，其他状态填null。')
+        return
+    if (not isinstance(confirmation, dict) or set(confirmation) != {'evidence_id', 'quote'}
+            or not isinstance(confirmation['evidence_id'], str)
+            or confirmation['evidence_id'] not in support):
+        raise ValueError('结果确认须提供本条另一发送方的支持引文。')
+    corroboration = facts[confirmation['evidence_id']]
+    if (corroboration['sender'] == original['sender']
+            or corroboration['position'] <= original['position']
+            or not isinstance(confirmation['quote'], str) or not confirmation['quote'].strip()
+            or confirmation['quote'] not in corroboration['quote']):
+        raise ValueError('结果确认须来自后续另一发送方的逐字原话。')
+
+
+def _validate_time_link(link, facts, seen):
+    if (not isinstance(link, dict) or set(link) != {'from_id', 'to_id'}
+            or any(not isinstance(link[key], str) or link[key] not in facts for key in ('from_id', 'to_id'))):
+        raise ValueError('时间关系只填写本条引用的from_id与to_id，间隔由程序计算。')
+    first, last = facts[link['from_id']], facts[link['to_id']]
+    start, end = parse_message_time(first['time']), parse_message_time(last['time'])
+    pair = (first['message_id'], last['message_id'])
+    if first['position'] >= last['position'] or pair in seen or (start and end and end < start):
+        raise ValueError('时间关系须按来源顺序指向不同消息，不能重复或倒置。')
+    seen.add(pair)
+    known = start is not None and end is not None
+    return {**link, 'calendar_days': (end.date() - start.date()).days if known else None,
+            'elapsed_seconds': int((end - start).total_seconds()) if known else None}
+
+
 def validate_fact_fields(claim, evidence_index):
-    """核对逐字出处及时间，状态与指代的含义继续交给逐项语义复核。"""
+    """逐项收集可独立核验的动作与时间错误，状态含义继续交给语义复核。"""
     facts = {row['evidence_id']: row for row in source_facts([claim], evidence_index)}
-    actions = claim['actions']
+    actions, links = claim['actions'], claim['time_links']
+    errors, intervals, seen = [], [], set()
     if not isinstance(actions, list):
-        raise ValueError('actions须为动作判读数组。')
-    for action in actions:
-        if (not isinstance(action, dict)
-                or set(action) != {'evidence_id', 'quote', 'actor', 'target', 'state', 'confirmation'}
-                or not isinstance(action['evidence_id'], str)
-                or action['evidence_id'] not in claim['supporting_evidence']
-                or not isinstance(action['state'], str) or action['state'] not in ACTION_STATES):
-            raise ValueError('动作判读须绑定本条支持引文及有效状态。')
-        original = facts[action['evidence_id']]
-        quote = action['quote']
-        if not isinstance(quote, str) or not quote.strip() or quote not in original['quote']:
-            raise ValueError('动作原话须逐字属于所引用的消息，不能借用相邻消息。')
-        for field, label in (('actor', '主体'), ('target', '对象')):
-            value = action[field]
-            if value is not None and (not isinstance(value, str) or not value.strip() or value not in quote):
-                raise ValueError(f'动作{label}须是动作原话中的逐字指代，归属不明时填null。')
-        confirmation = action['confirmation']
-        if action['state'] != 'confirmed_result':
-            if confirmation is not None:
-                raise ValueError('结果确认依据仅用于confirmed_result，其他状态填null。')
-            continue
-        if (not isinstance(confirmation, dict) or set(confirmation) != {'evidence_id', 'quote'}
-                or not isinstance(confirmation['evidence_id'], str)
-                or confirmation['evidence_id'] not in claim['supporting_evidence']):
-            raise ValueError('结果确认须提供本条另一发送方的支持引文。')
-        corroboration = facts[confirmation['evidence_id']]
-        if (corroboration['sender'] == original['sender']
-                or corroboration['position'] <= original['position']
-                or not isinstance(confirmation['quote'], str) or not confirmation['quote'].strip()
-                or confirmation['quote'] not in corroboration['quote']):
-            raise ValueError('结果确认须来自后续另一发送方的逐字原话。')
-    links = claim['time_links']
+        errors.append('actions须为动作判读数组。')
+    else:
+        for number, action in enumerate(actions):
+            try:
+                _validate_action(action, claim['supporting_evidence'], facts)
+            except ValueError as exc:
+                errors.append(f'actions[{number}]：{exc}')
     if not isinstance(links, list):
-        raise ValueError('time_links须为时间关系数组。')
-    intervals, seen = [], set()
-    for link in links:
-        if (not isinstance(link, dict) or set(link) != {'from_id', 'to_id'}
-                or any(not isinstance(link[key], str) or link[key] not in facts for key in ('from_id', 'to_id'))):
-            raise ValueError('时间关系只填写本条引用的from_id与to_id，间隔由程序计算。')
-        first, last = facts[link['from_id']], facts[link['to_id']]
-        start, end = parse_message_time(first['time']), parse_message_time(last['time'])
-        pair = (first['message_id'], last['message_id'])
-        if first['position'] >= last['position'] or pair in seen or (start and end and end < start):
-            raise ValueError('时间关系须按来源顺序指向不同消息，不能重复或倒置。')
-        seen.add(pair)
-        known = start is not None and end is not None
-        intervals.append({**link, 'calendar_days': (end.date() - start.date()).days if known else None,
-                          'elapsed_seconds': int((end - start).total_seconds()) if known else None})
+        errors.append('time_links须为时间关系数组。')
+    else:
+        for number, link in enumerate(links):
+            try:
+                intervals.append(_validate_time_link(link, facts, seen))
+            except ValueError as exc:
+                errors.append(f'time_links[{number}]：{exc}')
+    if errors:
+        raise ValueError('\n'.join(errors))
     return intervals

@@ -72,9 +72,6 @@ class CandidateEventUnit:
 class ReviewSession:
     start: int
     end: int
-    query_hits: frozenset[str]
-    score: float
-    question_scores: tuple[tuple[int, float], ...] = ()
 
 
 @dataclass
@@ -177,23 +174,35 @@ def build_candidate_event_units(anchors, anchor_meta, messages, max_gap_seconds=
     return units
 
 
-def _select_session_combination(sessions, render, max_bytes):
-    """按命题覆盖比较完整会话组合，每种覆盖组合保留质量与低成本候选各八项。"""
-    score_maps = [dict(row.question_scores) or {key: 1.0 for key in row.query_hits} for row in sessions]
-    questions = sorted({question for scores in score_maps for question in scores}, key=str)
+def _select_session_combination(sessions, render, max_bytes, query_groups=None):
+    """以查询命中的完整会话组选择材料，按各命题的完整查询覆盖均衡预算。"""
+    if query_groups is None:
+        query_groups = [(number, frozenset({number}), 1.0) for number in range(len(sessions))]
+    totals = defaultdict(float)
+    for question, _, weight in query_groups:
+        totals[question] += weight
+    questions = sorted(totals, key=str)
     baseline = text_bytes(render(set(), {}))
-    states = [(0, (0.0,) * len(questions), ())]
-    for number, (row, scores) in enumerate(zip(sessions, score_maps)):
-        positions = set(range(row.start, row.end + 1))
-        cost = text_bytes(render(positions, {})) - baseline
-        added = [(used + cost, tuple(max(old, scores.get(q, 0.0)) for q, old in zip(questions, quality)),
-                  chosen + (number,)) for used, quality, chosen in states
-                 if baseline + used + cost <= max_bytes]
-        buckets = defaultdict(list)
+    costs = [text_bytes(render(set(range(row.start, row.end + 1)), {})) - baseline for row in sessions]
+
+    def state_for(chosen):
+        quality = defaultdict(float)
+        for question, required, weight in query_groups:
+            if required <= chosen:
+                quality[question] += weight
+        return (sum(costs[number] for number in chosen),
+                tuple(quality[q] / totals[q] for q in questions), chosen)
+
+    states = [state_for(frozenset())]
+    for required in dict.fromkeys(group[1] for group in query_groups):
+        added = [state_for(chosen | required) for _, _, chosen in states]
+        buckets = defaultdict(dict)
         for state in states + added:
-            buckets[tuple(value > 0 for value in state[1])].append(state)
+            if baseline + state[0] <= max_bytes:
+                buckets[tuple(value > 0 for value in state[1])][state[2]] = state
         states = []
-        for options in buckets.values():
+        for bucket in buckets.values():
+            options = list(bucket.values())
             best = sorted(options, key=lambda state: (tuple(sorted(state[1])), -state[0]), reverse=True)[:8]
             cheap = sorted(options, key=lambda state: (state[0], tuple(-value for value in sorted(state[1]))))[:8]
             states.extend(dict.fromkeys(best + cheap))
@@ -207,7 +216,7 @@ def _select_session_combination(sessions, render, max_bytes):
 
 def select_evidence_context(selected_text, ledger, *, max_bytes=CONTEXT_MAX_BYTES,
                             radius=CONTEXT_RADIUS, max_gap_seconds=4 * 3600,
-                            select_from_ledger=False, review_sessions=None):
+                            select_from_ledger=False, review_sessions=None, review_query_groups=None):
     """回填本账本内已逐字绑定的入选引文；按候选事件单元与发言轮次统一选择，存疑单独保留。"""
     explicit_ids = set(re.findall(r'\bE_[0-9a-f]{32}\b', selected_text or ''))
     messages = ledger['source_messages']
@@ -374,7 +383,7 @@ def select_evidence_context(selected_text, ledger, *, max_bytes=CONTEXT_MAX_BYTE
         valid_ranges = set(_ranges(set(range(len(messages))), messages, max_gap_seconds))
         if any((row.start, row.end) not in valid_ranges for row in review_sessions):
             raise ValueError('检索回填必须使用当前来源的完整会话边界。')
-        included = _select_session_combination(review_sessions, render, max_bytes)
+        included = _select_session_combination(review_sessions, render, max_bytes, review_query_groups)
 
     while review_sessions is None and (any(tb_multi_queues) or any(tb_single_queues)):
         progressed = False

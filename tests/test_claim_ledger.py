@@ -145,6 +145,60 @@ class ClaimLedgerTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, '原文'):
             self.build()
 
+    def test_reference_errors_identify_all_conflicting_fields_and_unknown_ids(self):
+        from claim_ledger import compile_claims
+        from test_claim_retrieval import source, QUESTIONS
+        data = source()
+        prepared = report_generation.prepare_final_input('合成', '', '', '', [],
+            ledger=data, review_questions=QUESTIONS)
+        response = claim_response('对方在这次交流中表示愿意了解。', kind='inference',
+            supporting_evidence=['P_79', 'P_79', 'P_9999'], counter_review='not_found_in_selected',
+            limiting_evidence=[{'evidence_id': 'P_79', 'reason': '仅限本次交流。'}])
+        with self.assertRaises(ValueError) as caught:
+            compile_claims(response, data, prepared, 'analysis')
+        error = str(caught.exception)
+        for detail in ('P_79', 'supporting_evidence[0]', 'supporting_evidence[1]',
+                       'limiting_evidence[0]', 'P_9999', '未知或未入选'):
+            self.assertIn(detail, error)
+
+    def test_retrieval_repair_catalog_uses_available_source_aliases(self):
+        from claim_ledger import generate_claims
+        from test_claim_retrieval import source, QUESTIONS
+        data = source()
+        prepared = report_generation.prepare_final_input('合成', '', '', '', [],
+            ledger=data, review_questions=QUESTIONS)
+        invalid = claim_response(kind='fact', supporting_evidence=['P_79', 'P_9999'],
+                                 counter_review='not_found_in_selected')
+        prompts = []
+        responses = iter([invalid, claim_response()])
+        def request(prompt):
+            prompts.append(prompt)
+            return next(responses)
+        with tempfile.TemporaryDirectory() as directory:
+            generate_claims(prepared, data, 'analysis', request, attempt_dir=Path(directory))
+        catalog = prompts[1].split('推断/假设及跨时间模式可用的完整窗口编号仅有：\n')[1].split('\n', 1)[0]
+        self.assertEqual(set(catalog.split()), set(prepared.retrieval['source_aliases']))
+        self.assertIn('"allowed_time_endpoints": ["P_79"]', prompts[1])
+
+    def test_retrieval_repair_preserves_legacy_reference_time_endpoints(self):
+        from claim_ledger import generate_claims
+        from test_claim_retrieval import source, QUESTIONS
+        data = source()
+        prepared = report_generation.prepare_final_input('合成', '', '', '', [],
+            ledger=data, review_questions=QUESTIONS)
+        legacy_id = data['documents'][0]['events'][0]['evidence_id']
+        self.assertNotIn(legacy_id, prepared.evidence_ids)
+        invalid = claim_response(text='次日回应。', kind='fact', subject='interaction',
+            supporting_evidence=[legacy_id], counter_review='not_found_in_selected')
+        prompts = []
+        responses = iter([invalid, claim_response()])
+        def request(prompt):
+            prompts.append(prompt)
+            return next(responses)
+        with tempfile.TemporaryDirectory() as directory:
+            generate_claims(prepared, data, 'analysis', request, attempt_dir=Path(directory))
+        self.assertIn('"allowed_time_endpoints": ["' + legacy_id + '"]', prompts[1])
+
     def test_interpretation_without_context_and_single_event_long_term_are_rejected(self):
         without_context = copy.deepcopy(self.prepared)
         without_context.context_ids.clear()

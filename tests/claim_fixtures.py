@@ -2,13 +2,31 @@
 import json
 
 
+def field_review_response(prompt):
+    data, _ = json.JSONDecoder().raw_decode(prompt.split('\n本条草稿及登记引用\n', 1)[1])
+    return json.dumps({
+        'field_checks': [dict(field=field, content_supported=True, citations_complete=True,
+                              certainty_preserved=True, outcome_context_complete=True,
+                              reason='合成流程替身确认该字段的有限判断。') for field in data['statement_fields']],
+        'action_checks': [dict(action_index=number, actor_supported=True, target_supported=True,
+                               state_supported=True, reason='合成动作逐项一致。')
+                          for number in range(1, len(data['actions']) + 1)],
+        'counter_checks': [dict(evidence_id=row['evidence_id'], directly_contradicts=True,
+                                reason='合成反证直接相反。') for row in data['counter_evidence']],
+    })
+
+
 def with_reviews(responses):
     """流程测试补齐独立复核响应，原有生成响应序列保持各自的测试含义。"""
     iterator = None if callable(responses) else iter(responses)
 
     def request(*args, **kwargs):
         from claim_semantic_review import REVIEW_INSTRUCTIONS
+        from claim_field_review import FIELD_REVIEW_INSTRUCTIONS
         system = kwargs.get('system_prompt', args[1] if len(args) > 1 else '')
+        if system == FIELD_REVIEW_INSTRUCTIONS:
+            prompt = kwargs.get('user_prompt', args[2] if len(args) > 2 else '')
+            return field_review_response(prompt)
         if system == REVIEW_INSTRUCTIONS:
             prompt = kwargs.get('user_prompt', args[2] if len(args) > 2 else '')
             drafts, _ = json.JSONDecoder().raw_decode(prompt.split('待复核结论及逐字引用\n', 1)[1])

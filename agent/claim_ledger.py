@@ -52,13 +52,12 @@ def claim_contract(report_kind, *, raw_sources=False):
         context_review='说明连续原文如何支持解释、反证是否相关。', uncertainty='还缺少哪些信息。',
         actions=[], time_links=[])]}
     return f'''\n## 结论输出协议
-只输出一个 JSON 对象，不另写正文；程序从通过校验的结论生成报告。条数由独立证据决定，通常选择6—10条关键结论，素材少时可以更少。合并重复判断，省略缺少依据的维度。
+仅输出JSON对象，校验后生成报告。条数由独立证据决定，通常6—10条，素材少时可更少。合并重复判断，省略无据维度。
 每条 text 不超过80个汉字，context_review 不超过60个汉字，uncertainty 不超过40个汉字，以免输出截断。
 {json.dumps(example, ensure_ascii=False)}
 section 为章节序号：{headings}。允许省略无证据的章节。
 kind 仅为 fact/inference/hypothesis/uncertain；subject 仅为 peer/interaction/user。
-scope 仅为 local/repeated/long_term。repeated 至少来自两个不同日期的独立会话；long_term 至少三个日期、三个独立会话且跨度至少30天。这只是范围门槛，不证明稳定人格。
-scope只统计supporting_evidence的独立日期和会话，同日多个编号不算多日。
+scope为local/repeated/long_term。仅统计supporting_evidence。repeated须至少两个日期、两个独立会话；long_term须至少三个日期、三个会话且跨度至少30天。同日多编号不算多日，范围门槛不证明稳定人格。
 confidence为high/medium/low。uncertain 的 scope 固定为 local，confidence 固定为 low，写明uncertainty。
 除 uncertain 外均须有 supporting_evidence。{source_rule}
 supporting_evidence 为编号数组。counter_evidence 为对象数组，每项为{{"evidence_id":"{reference}","target":"当前text中被削弱的原样片段","reason":"这条原文如何直接削弱该片段"}}。
@@ -74,12 +73,13 @@ context_review 必须说明上下文和支持/反证的相关性；不要照搬�
 反证须直接削弱target。取消活动不自动反驳关心，文字简短不自动反驳情绪支持。情境限制放limiting_evidence，无反证时counter_evidence为空、counter_review为not_found_in_selected。
 fact 只记录直接可观察的言语或行为；关系定位、动机、能力和稳定倾向均不能标为 fact 绕过语境或范围要求。local 的文字也必须限定到实际事件，不能用局部标签承载总体判断。
 对方的直接人物结论 subject=peer，支持中必须包含对方发送的已核验引文。转发/引用内容不自动代表发送者立场。
-所有判断只能写在 claims 内；text、context_review、uncertainty、reason 和 target 均须为纯文本，禁止包含P/E/M/C引用编号、HTML或换行。引用编号只放在证据数组和evidence_id字段。text不含Markdown格式。
-只输出完整JSON，无需完成标记。
+所有判断写在claims内。text、context_review、uncertainty、reason和target用纯文本，禁止P/E/M/C编号、HTML或换行。编号只放证据数组和evidence_id字段，text不含Markdown。JSON无需完成标记。
 
 {FACTS_MARKER}
 程序复制引文、发言者和日期。结论与理由均属模型解释，fact显示为“原话概括”。
-日期、钟点、量化间隔及次日/数日后统一填time_links=[{{"from_id":"{reference}","to_id":"后续引用"}}]，端点属于本条引用，程序计算日历日及秒数。正文保留定性解释，同一事件或因果须另核对。
+日期、钟点及量化间隔（含次日/数日后）用time_links=[{{"from_id":"{reference}","to_id":"后续引用"}}]，端点须属本条引用。程序计算消息日历日差及秒差，事件关联另核验。
+text、context_review、uncertainty及证据reason中的原话复述也须去除时间词。原话时间只保留在actions的quote或程序展示的引文中。
+未来意向的执行时间不能用任意后续消息充当端点。
 计划、动作及结果填写actions=[{{"evidence_id":"{reference}","quote":"逐字动作原话","actor":null,"target":null,"state":"unknown","confirmation":null}}]。引用须属本条支持，actor/target为quote内逐字指代，歧义时null，转述按内层人物核对。
 state为planned意向、reported_done自述完成、confirmed_result另有结果确认、unknown待确认。confirmed_result须附confirmation={{"evidence_id":"另一发送方后续支持编号","quote":"逐字确认原话"}}，其余填null。主体、对象、状态及确认是否属于同一动作均须语义复核。
 纯风格/关系解释可用空actions，无需比较时间时time_links为空。
@@ -187,10 +187,23 @@ def _validate_claim(claim, ledger, prepared, report_kind, index, messages, *, fa
     counter = _reviewed_references(claim['counter_evidence'], claim['text'], counter=True, legacy=not facts_enabled)
     limits = _reviewed_references(claim['limiting_evidence'], claim['text'], counter=False, legacy=not facts_enabled)
     all_ids = support + counter + limits
-    if len(set(all_ids)) != len(all_ids):
-        raise ValueError('支持、反证与情境限制编号重复或重叠。')
-    if any(eid not in prepared.evidence_ids or eid not in index for eid in all_ids):
-        raise ValueError('结论引用未知或未入选证据。')
+    aliases = {mid: alias for alias, mid in (prepared.retrieval or {}).get('source_aliases', {}).items()}
+    locations = {}
+    for field, entries in (('supporting_evidence', support), ('counter_evidence', counter),
+                           ('limiting_evidence', limits)):
+        for number, eid in enumerate(entries):
+            locations.setdefault(eid, []).append(f'{field}[{number}]')
+    reference_errors = []
+    for eid, fields in locations.items():
+        label = aliases.get(eid, eid)
+        if len(fields) > 1:
+            reference_errors.append(f'支持、反证与情境限制编号重复或重叠：{label} 位于 '
+                                    + '、'.join(fields) + '。按当前判断选择一个证据角色，仅保留一次。')
+        if eid not in prepared.evidence_ids or eid not in index:
+            reference_errors.append(f'结论引用未知或未入选证据：{label} 位于 ' + '、'.join(fields)
+                                    + '。只能使用本次提供的可引用编号，不能为占位记录自行编造编号。')
+    if reference_errors:
+        raise ValueError('\n'.join(reference_errors))
     if any(eid.startswith('M_') and eid not in prepared.context_ids for eid in all_ids):
         raise ValueError('原文消息引用必须具有完整连续上下文。')
     refs = []
@@ -231,10 +244,10 @@ def _validate_claim(claim, ledger, prepared, report_kind, index, messages, *, fa
                              f'范围标签为{claim["scope"]}。须补充合格支持或缩小判断本身。')
     validated = {**claim, 'coverage': coverage}
     if facts_enabled:
+        validated['time_intervals'] = validate_fact_fields(claim, index)
         check_time_prose(claim)
         if QUOTE_MARKER in prepared.prompt:
             check_quoted_prose(claim, index)
-        validated['time_intervals'] = validate_fact_fields(claim, index)
     return validated
 
 
@@ -251,18 +264,8 @@ def _parse_response(response, report_kind):
         raise ValueError('结论响应必须为单个 JSON 对象。') from exc
 
 
-def compile_claims(response, ledger, prepared, report_kind, *, schema_version=VERSION):
-    if schema_version not in (VERSION, LEGACY_VERSION):
-        raise ValueError('结论账本版本无效。')
-    facts_enabled = schema_version == VERSION
-    if not facts_enabled and FACTS_MARKER in prepared.prompt:
-        raise ValueError('实际输入使用新版事实协议，不能降级账本版本。')
-    payload = _parse_response(response, report_kind)
-    if (not isinstance(payload, dict) or set(payload) != {'claims'}
-            or not isinstance(payload['claims'], list) or not payload['claims']):
-        raise ValueError('结论账本须包含非空的结论数组。')
-    index = _evidence_index(ledger)
-    messages = {message['message_id']: message for message in ledger['source_messages']}
+def _reference_map(prepared, index, messages):
+    """编译和纠错共用短编号及已重核的旧引用映射。"""
     aliases = prepared.retrieval.get('source_aliases', {}) if prepared.retrieval is not None else {}
     for alias, mid in aliases.items():
         if mid not in messages or alias != f'P_{messages[mid]["position"]}' or mid not in prepared.context_ids:
@@ -275,6 +278,22 @@ def compile_claims(response, ledger, prepared, report_kind, *, schema_version=VE
                 and refs[0]['message_id'] in visible_messages
                 and match_quote(item, [messages[refs[0]['message_id']]]) == item['grounding']):
             references[eid] = refs[0]['message_id']
+    return references
+
+
+def compile_claims(response, ledger, prepared, report_kind, *, schema_version=VERSION):
+    if schema_version not in (VERSION, LEGACY_VERSION):
+        raise ValueError('结论账本版本无效。')
+    facts_enabled = schema_version == VERSION
+    if not facts_enabled and FACTS_MARKER in prepared.prompt:
+        raise ValueError('实际输入使用新版事实协议，不能降级账本版本。')
+    payload = _parse_response(response, report_kind)
+    if (not isinstance(payload, dict) or set(payload) != {'claims'}
+            or not isinstance(payload['claims'], list) or not payload['claims']):
+        raise ValueError('结论账本须包含非空的结论数组。')
+    index = _evidence_index(ledger)
+    messages = {message['message_id']: message for message in ledger['source_messages']}
+    references = _reference_map(prepared, index, messages)
     claims, seen, errors = [], set(), []
     for number, claim in enumerate(payload['claims'], 1):
         try:
@@ -350,13 +369,18 @@ def apply_claim_revisions(payload, base, targets):
 
 
 def generate_claims(prepared, ledger, report_kind, request, *, attempt_dir, allow_repair=True, review_request=None,
-                    source_request=None, action_review_request=None):
+                    source_request=None, action_review_request=None, field_review=False):
     """初稿与语义修订各有一次格式纠错；语义只修订一次，未通过不发布。"""
     attempt_dir.mkdir(parents=True, exist_ok=True)
     if review_request is None and action_review_request is not None and FACTS_MARKER in prepared.prompt:
         review_request = action_review_request
     if review_request is not None:
         prepared.prompt += '\n' + REVIEW_MARKER + '\n每条结论将独立核查证据角色、主体与适用范围。请一次只表达一个可核验判断。\n'
+    if field_review:
+        from claim_field_review import FIELD_REVIEW_MARKER, review_claim_fields
+        if review_request is None or source_request is not None:
+            raise ValueError('逐字段复核需要专用复核请求，来源提取实验须单独运行。')
+        prepared.prompt += '\n' + FIELD_REVIEW_MARKER + '\n逐项检查叙述依据、自己的引用、动作与反证。\n'
     if source_request is not None:
         from claim_source_review import SOURCE_MARKER
         if review_request is None or prepared.retrieval is None:
@@ -369,6 +393,7 @@ def generate_claims(prepared, ledger, report_kind, request, *, attempt_dir, allo
     max_attempts = 1 + sum(repairs.values())
     revision_base, revision_targets = None, None
     source_cache = {}
+    field_cache = {}
     for attempt in range(1, max_attempts + 1):
         (attempt_dir / f'attempt_{attempt:02d}_input.md').write_text(prepared.prompt, encoding='utf-8')
         response = request(prepared.prompt)
@@ -393,9 +418,13 @@ def generate_claims(prepared, ledger, report_kind, request, *, attempt_dir, allo
                     raise RuntimeError('动作判读须完成逐项语义复核后才能发布。')
             if reviewer is not None:
                 stage = 'semantics'
-                compiled['semantic_review'] = review_claims(compiled, prepared, _evidence_index(ledger),
-                    reviewer, attempt_dir / f'review_{attempt:02d}', source_request=source_request,
-                    source_cache=source_cache)
+                if field_review:
+                    compiled['semantic_review'] = review_claim_fields(compiled, prepared, ledger, reviewer,
+                        attempt_dir / f'review_{attempt:02d}', cache=field_cache)
+                else:
+                    compiled['semantic_review'] = review_claims(compiled, prepared, _evidence_index(ledger),
+                        reviewer, attempt_dir / f'review_{attempt:02d}', source_request=source_request,
+                        source_cache=source_cache)
             return compiled
         except ValueError as exc:
             (attempt_dir / f'attempt_{attempt:02d}_errors.txt').write_text(str(exc), encoding='utf-8')
@@ -418,8 +447,9 @@ def generate_claims(prepared, ledger, report_kind, request, *, attempt_dir, allo
             hints = []
             if isinstance(payload, dict) and isinstance(payload.get('claims'), list):
                 index = _evidence_index(ledger)
-                aliases = prepared.retrieval.get('source_aliases', {}) if prepared.retrieval is not None else {}
-                index.update({alias: index[mid] for alias, mid in aliases.items() if mid in index})
+                messages = {message['message_id']: message for message in ledger['source_messages']}
+                references = _reference_map(prepared, index, messages)
+                index.update({alias: index[mid] for alias, mid in references.items() if mid in index})
                 for number, claim in enumerate(payload['claims'], 1):
                     if not isinstance(claim, dict) or not isinstance(claim.get('supporting_evidence'), list):
                         continue
@@ -435,18 +465,21 @@ def generate_claims(prepared, ledger, report_kind, request, *, attempt_dir, allo
                                   'support_speakers': sorted({ref['sender'] for ref in refs}),
                                   'allowed_subjects_for_same_support': ['user', 'interaction', 'peer'] if any(ref['sender'] == 'other' for ref in refs) else ['user', 'interaction'],
                                   'coverage': coverage, 'allowed_scopes_for_same_support': scopes})
-                    if stage == 'revision_structure':
-                        endpoints = list(claim['supporting_evidence'])
-                        for field in ('counter_evidence', 'limiting_evidence'):
-                            entries = claim.get(field)
-                            if isinstance(entries, list):
-                                endpoints.extend(row['evidence_id'] for row in entries
-                                                 if isinstance(row, dict) and isinstance(row.get('evidence_id'), str))
-                        hints[-1]['allowed_time_endpoints'] = endpoints
+                    endpoints = list(claim['supporting_evidence'])
+                    for field in ('counter_evidence', 'limiting_evidence'):
+                        entries = claim.get(field)
+                        if isinstance(entries, list):
+                            endpoints.extend(row['evidence_id'] for row in entries
+                                             if isinstance(row, dict) and isinstance(row.get('evidence_id'), str))
+                    hints[-1]['allowed_time_endpoints'] = list(dict.fromkeys(
+                        eid for eid in endpoints if isinstance(eid, str) and eid in index
+                        and references.get(eid, eid) in prepared.evidence_ids))
+            aliases = {mid: alias for alias, mid in (prepared.retrieval or {}).get('source_aliases', {}).items()}
+            available_ids = sorted(aliases.get(eid, eid) for eid in prepared.context_ids)
             prepared.prompt = original_prompt + previous + '\n\n## 本次响应需要纠正\n' + str(exc) + (
                 '\n请重新输出完整结论JSON，逐条核对，而不是复制范围标签。证据不足时使用local或uncertain，'
                 '保留相关材料；误分为反证的情境限制应说明理由并移到limiting_evidence，无关材料不引用，不能为了抬高可信度省略真正相关的反证。'
-                '\n推断/假设及跨时间模式可用的完整窗口编号仅有：\n' + ' '.join(sorted(prepared.context_ids)) +
+                '\n推断/假设及跨时间模式可用的完整窗口编号仅有：\n' + ' '.join(available_ids) +
                 '\n程序已按支持证据算出日期与范围选项；没有计算反证日期：\n' + json.dumps(hints, ensure_ascii=False) +
                 '\n保留原结论顺序，优先修正失败项，不要新增判断或把已合格判断改为越界范围。'
                 '若沿用同组支持，scope必须在对应allowed_scopes_for_same_support中选择，且同步收缩判断文字。'
@@ -463,11 +496,12 @@ def generate_claims(prepared, ledger, report_kind, request, *, attempt_dir, allo
                                     '若新判断已包含某例外，描述该例外的原文通常支持新判断，应重评角色。'
                                     '程序保留所有通过条目，再对合并后的全部结论重新复核。'
                                     '禁止返回claims或重写整份报告，禁止新增条目或省略失败项。')
-            if stage == 'revision_structure':
-                prepared.prompt += ('\ntime_links端点须同时登记为本条支持、反证或限制引用。'
-                                    '沿用引用时只可选allowed_time_endpoints；比较另一事件时先补充该事件的引用，或保留定性解释并使用空time_links。')
-            prepared.prompt += ('\n\n逐项改写报错字段，原样重复会终止生成。时间词留在引用原话中，'
-                                '正文与理由改为定性说明，比较消息间隔时填写time_links。'
+            prepared.prompt += ('\ntime_links端点须同时登记为本条支持、反证或限制引用。'
+                                '沿用引用时只可选allowed_time_endpoints；比较另一事件时先补充该事件的引用，或保留定性解释并使用空time_links。')
+            prepared.prompt += ('\n\n逐项改写报错字段，原样重复会终止生成。'
+                                'text、context_review、uncertainty及证据reason中的原话复述也须去除时间词。'
+                                '原话时间只保留在actions的quote或程序展示的引文中。'
+                                '比较消息间隔时填写time_links，未来意向不能用任意后续消息充当执行时间。'
                                 '\n## 本次必须消除的错误\n' + str(exc))
 
 

@@ -20,7 +20,7 @@ from report_context import select_evidence_context, source_repetition_notes, Evi
 from claim_ledger import ReportInput, claim_contract, context_catalog, generate_claims, render_claim_report, VERSION as CLAIM_VERSION
 from claim_retrieval import retrieve_claim_context, retrieval_notes
 from evidence_grounding import digest
-from claim_semantic_review import REVIEW_INSTRUCTIONS
+from claim_field_review import FIELD_REVIEW_INSTRUCTIONS, review_json_mode
 
 
 def load_evidence_summary(artifacts: dict) -> str:
@@ -274,10 +274,8 @@ def generate_persona_report(
             timeout,
             max_tokens=PERSONA_REPORT_MAX_OUTPUT_TOKENS,
         ), attempt_dir=artifacts['support_dir'] / 'claim_attempts_persona',
-            review_request=(lambda prompt: call_llm_with_retry(config, REVIEW_INSTRUCTIONS, prompt, timeout,
-                                                              max_tokens=4800)) if retrieval is not None else None,
-            action_review_request=(lambda prompt: call_llm_with_retry(config, REVIEW_INSTRUCTIONS, prompt, timeout,
-                                                                     max_tokens=4800)) if retrieval is None else None)
+            review_request=lambda prompt: call_llm_with_retry(config, FIELD_REVIEW_INSTRUCTIONS, prompt, timeout,
+                max_tokens=4800, json_mode=review_json_mode(config)), field_review=True)
     persona_report = render_claim_report(claims, artifacts['name'])
     with tempfile.TemporaryDirectory(prefix=".persona-", dir=artifacts["support_dir"]) as temporary:
         staged = {key: Path(temporary) / artifacts[key].name for key in ("persona_file", "persona_meta_file", "persona_claims_file", "persona_input_file")}

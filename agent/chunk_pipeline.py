@@ -10,7 +10,7 @@ from llm_client import call_llm_with_retry, should_retry_with_smaller_prompt
 from report_generation import prepare_final_input, build_report_system_prompt, FINAL_REPORT_MAX_OUTPUT_TOKENS
 from claim_ledger import render_claim_report, VERSION as CLAIM_VERSION
 from claim_retrieval import generate_reviewed_claims
-from claim_semantic_review import REVIEW_INSTRUCTIONS
+from claim_field_review import FIELD_REVIEW_INSTRUCTIONS, review_json_mode
 from report_output import write_report
 from run_promotion import promote_successful_run
 from evidence_grounding import ground_document, digest
@@ -139,7 +139,8 @@ def run_single_workflow(
             lambda prompt: call_llm_with_retry(config, report_system_prompt, prompt, timeout, max_tokens=2600),
             attempt_dir=run_paths['run_dir'] / 'claim_attempts_analysis',
             plan_identity=digest([config.model, config.api_base, getattr(config, 'thinking', None), report_system_prompt]),
-            review_request=lambda prompt: call_llm_with_retry(config, REVIEW_INSTRUCTIONS, prompt, timeout, max_tokens=4800))
+            review_request=lambda prompt: call_llm_with_retry(config, FIELD_REVIEW_INSTRUCTIONS, prompt, timeout,
+                max_tokens=4800, json_mode=review_json_mode(config)), field_review=True)
     run_paths['analysis_input_file'].write_text(prepared.prompt, encoding='utf-8')
     run_paths['analysis_claims_file'].write_text(json.dumps(claims, ensure_ascii=False, indent=2), encoding='utf-8')
     report = render_claim_report(claims, artifacts['name'])

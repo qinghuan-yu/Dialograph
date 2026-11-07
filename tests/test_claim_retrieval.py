@@ -72,12 +72,47 @@ def competing_sessions():
 
 
 class ClaimRetrievalTests(unittest.TestCase):
+    def test_retrieval_does_not_fill_spare_budget_with_an_incomplete_query_group(self):
+        from claim_retrieval import retrieve_claim_context
+        from report_context import ReviewSession, select_evidence_context
+        data = competing_sessions()
+        budget = len(select_evidence_context('', data, select_from_ledger=True,
+            review_sessions=[ReviewSession(0, 15), ReviewSession(16, 31)]).text.encode('utf-8')) + 30
+        questions = [{'proposition': '协作过程', 'support_queries': ['并'],
+                      'challenge_queries': ['再次讨论']}]
+        context = retrieve_claim_context(data, questions, max_bytes=budget)
+        self.assertEqual(context.retrieval['selected_sessions'], [[17, 32]])
+        self.assertEqual(context.retrieval['queries'][0]['status'], 'budget_exceeded')
+        self.assertEqual(context.retrieval['queries'][1]['status'], 'selected')
+
+    def test_matching_query_keeps_all_its_sessions_when_competing_with_partial_hits(self):
+        from report_context import ReviewSession, select_evidence_context
+        data = competing_sessions()
+        sessions = [ReviewSession(0, 15), ReviewSession(16, 31), ReviewSession(32, 72)]
+        budget = len(select_evidence_context('', data, select_from_ledger=True,
+                     review_sessions=sessions[:2]).text.encode('utf-8')) + 30
+        groups = [(1, frozenset({0, 2}), 1.0), (1, frozenset({1}), 1.0)]
+        context = select_evidence_context('', data, select_from_ledger=True,
+            review_sessions=sessions, review_query_groups=groups, max_bytes=budget)
+        self.assertEqual(context.source_positions, frozenset(range(17, 33)))
+        self.assertLessEqual(len(context.text.encode('utf-8')), budget)
+
+    def test_spare_budget_keeps_additional_matching_sessions_for_the_same_question(self):
+        from claim_retrieval import retrieve_claim_context
+        data = source({78: '初次修改应该完成了。', 120: '复查发现仍有错误。'}, session_break=80)
+        questions = [{'proposition': '修改是否完成', 'support_queries': ['修改应该完成'],
+                      'challenge_queries': ['仍有错误']}]
+        context = retrieve_claim_context(data, questions, max_bytes=48000)
+        self.assertEqual(context.retrieval['selected_sessions'], [[1, 80], [81, 140]])
+        self.assertTrue(all(row['all_hits_included'] for row in context.retrieval['queries']))
+        self.assertLessEqual(len(context.text.encode('utf-8')), 48000)
+
     def test_retrieved_text_shows_global_repetition_count_even_outside_selected_session(self):
         from report_context import select_evidence_context, source_repetition_notes, ReviewSession
         repeated = '一段在多个场景原样发送的文字。'
         data = source({78: repeated, 138: repeated, 139: repeated}, session_break=80)
         result = select_evidence_context('', data, select_from_ledger=True,
-            review_sessions=[ReviewSession(0, 79, frozenset({'Q1'}), 1)])
+            review_sessions=[ReviewSession(0, 79)])
         notes = source_repetition_notes(data, result.source_positions)
         self.assertIn('同文计数 P_79（全源3次，本发送方2次）', notes)
         self.assertIn('P_79\n' + repeated, result.text)
@@ -131,13 +166,16 @@ class ClaimRetrievalTests(unittest.TestCase):
     def test_session_combination_can_replace_an_early_expensive_choice(self):
         from report_context import ReviewSession, select_evidence_context
         data = competing_sessions()
-        expensive = ReviewSession(32, 72, frozenset({'a', 'b'}), 2, ((1, 1.0), (2, 1.0)))
-        first = ReviewSession(0, 15, frozenset({'a', 'c'}), 1.8, ((1, 0.9), (3, 0.9)))
-        second = ReviewSession(16, 31, frozenset({'b'}), 0.9, ((2, 0.9),))
+        expensive = ReviewSession(32, 72)
+        first = ReviewSession(0, 15)
+        second = ReviewSession(16, 31)
         budget = len(select_evidence_context('', data, select_from_ledger=True,
                                             review_sessions=[expensive]).text.encode('utf-8')) + 30
         result = select_evidence_context('', data, select_from_ledger=True, max_bytes=budget,
-                                         review_sessions=[first, second, expensive])
+            review_sessions=[first, second, expensive],
+            review_query_groups=[(1, frozenset({0}), 0.9), (3, frozenset({0}), 0.9),
+                                 (2, frozenset({1}), 0.9), (1, frozenset({2}), 1.0),
+                                 (2, frozenset({2}), 1.0)])
         self.assertTrue(set(range(1, 33)) <= result.source_positions)
         self.assertNotIn(33, result.source_positions)
 

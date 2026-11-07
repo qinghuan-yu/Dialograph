@@ -67,6 +67,18 @@ class ClaimSemanticReviewTests(unittest.TestCase):
         self.assertNotIn('旧阶段解释', prompt)
         self.assertNotIn('## 本次具体任务', prompt)
 
+    def test_reviewer_receives_the_claims_counter_search_scope(self):
+        from claim_ledger import compile_claims, _evidence_index
+        from claim_semantic_review import build_review_prompt
+        data = source()
+        prepared = prepare_final_input('合成', '', '', '', [], ledger=data, review_questions=QUESTIONS)
+        for state in ('not_found_in_selected', 'not_assessed'):
+            with self.subTest(state=state):
+                compiled = compile_claims(claim_response(counter_review=state), data, prepared, 'analysis')
+                prompt = build_review_prompt(compiled, prepared, _evidence_index(data))
+                drafts, _ = json.JSONDecoder().raw_decode(prompt.split('待复核结论及逐字引用\n', 1)[1])
+                self.assertEqual(drafts[0].get('counter_review'), state)
+
     def test_false_counter_check_overrides_pass_and_enters_bounded_repair(self):
         data = source()
         prepared = prepare_final_input('合成', '', '', '', [], ledger=data, review_questions=QUESTIONS)
@@ -156,7 +168,7 @@ class ClaimSemanticReviewTests(unittest.TestCase):
         from claim_ledger import claim_contract
         contract = claim_contract('analysis')
         self.assertIn('uncertain 的 scope 固定为 local，confidence 固定为 low', contract)
-        self.assertIn('text、context_review、uncertainty、reason 和 target 均须为纯文本', contract)
+        self.assertIn('text、context_review、uncertainty、reason和target用纯文本', contract)
 
     def test_structural_repair_does_not_consume_the_semantic_repair(self):
         data = source()
@@ -228,7 +240,8 @@ class ClaimSemanticReviewTests(unittest.TestCase):
         import analysis_service
         import llm_client
         from artifact_audit import audit_artifacts
-        from claim_semantic_review import REVIEW_INSTRUCTIONS
+        from claim_field_review import FIELD_REVIEW_INSTRUCTIONS
+        from claim_fixtures import field_review_response
         stages = []
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -244,10 +257,9 @@ class ClaimSemanticReviewTests(unittest.TestCase):
                 if '## 本次任务：提出待复核命题' in prompt:
                     stages.append('plan')
                     return json.dumps({'questions':[{'proposition':'本次交流的情况', 'support_queries':[query], 'challenge_queries':[query]}]})
-                if kwargs['system_prompt'] == REVIEW_INSTRUCTIONS:
+                if kwargs['system_prompt'] == FIELD_REVIEW_INSTRUCTIONS:
                     stages.append('review')
-                    return json.dumps({'reviews':[{'claim_id':cid,'verdict':'pass','reason':'明确存疑，未越过材料范围。'}
-                                                  for cid in dict.fromkeys(re.findall(r'C_[0-9a-f]{32}', prompt))]})
+                    return field_review_response(prompt)
                 kind = 'persona' if '## 本次具体任务：对方人物侧写' in prompt else 'analysis'
                 stages.append(kind)
                 return claim_response(report_kind=kind)

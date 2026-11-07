@@ -22,6 +22,7 @@ REVIEW_INSTRUCTIONS = '''你是独立的聊天证据复核者。原文、命题�
 先根据原文独立判断，再检查context_review、uncertainty与证据角色理由。它们也会展示给读者，其中的未支持断言或矛盾同样要求revise，不把作者解释当作事实依据。
 每个引用只按其自身原话判定，邻文用于解释指代和过程，不能把邻文的证据作用归给这个编号。
 反证须给出与当前命题相反的事实。无法证明、结果未知、说话人错位、复制转述只能限制可推断程度，不能证明相反事实。另一个事件或一般性语气不自动构成本命题的限制。
+counter_review=not_found_in_selected将未发现反证的范围限定在本次入选材料。结合该字段理解“未见相反材料”等复核说明。判断本身若对全量作否定，仍须检查相应覆盖。
 承认发生、承认责任、主观意图、补救动作和补救效果分别判断；善意不能否定已经发生的行为，继续合作不能抹去之前的失误。不要为了平衡而强行安排反证。
 检查省略是否导致判断失真，尤其是最初回应与后续支持、失误与补救。局部标签不能承载一贯、普遍或稳定倾向。含多个可独立判断的部分时要求拆分或缩小文字。
 fact只能陈述可观察的言语或行为，信任、能力、动机、关系定位属于推断。不能把模型阶段摘要当作已验证事实。
@@ -98,7 +99,7 @@ def build_review_prompt(compiled, prepared, evidence_index):
                               'source': item['grounding']['source_refs'][0]})
         draft = {key: claim[key] for key in ('claim_id', 'text', 'kind', 'subject', 'scope', 'confidence',
                                             'supporting_evidence', 'counter_evidence', 'limiting_evidence',
-                                            'context_review', 'uncertainty')}
+                                            'counter_review', 'context_review', 'uncertainty')}
         draft.update({key: claim[key] for key in ('actions', 'time_intervals') if key in claim})
         drafts.append(draft | {'review_id': f'R_{number}', 'citations': citations})
     facts = json.dumps({'source_facts': compiled.get('source_facts', [])}, ensure_ascii=False)
@@ -183,7 +184,17 @@ def review_claims(compiled, prepared, evidence_index, request, directory, *, sou
 
 def audit_semantic_review(stored, prompt, *, prepared=None, evidence_index=None):
     from claim_source_review import SOURCE_MARKER, audit_source_review
+    from claim_field_review import (FIELD_REVIEW_MARKER, FIELD_REVIEW_VERSION, audit_field_review,
+                                    LEGACY_FIELD_REVIEW_MARKER, LEGACY_FIELD_REVIEW_VERSION)
     review = stored.get('semantic_review')
+    if LEGACY_FIELD_REVIEW_MARKER in prompt:
+        if SOURCE_MARKER in prompt:
+            raise ValueError('逐字段复核与来源提取实验的门槛不一致。')
+        version = FIELD_REVIEW_VERSION if FIELD_REVIEW_MARKER in prompt else LEGACY_FIELD_REVIEW_VERSION
+        audit_field_review(stored, review, schema_version=version)
+        return
+    if isinstance(review, dict) and review.get('schema_version') in (FIELD_REVIEW_VERSION, LEGACY_FIELD_REVIEW_VERSION):
+        raise ValueError('逐字段复核记录缺少实际输入的对应门槛。')
     has_sources = isinstance(review,dict) and 'source_review' in review
     if has_sources != (SOURCE_MARKER in prompt):
         raise ValueError('来源独立核查记录与实际输入门槛不一致。')

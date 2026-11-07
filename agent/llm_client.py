@@ -34,6 +34,7 @@ def call_llm(
     timeout: int,
     max_tokens: int = 2600,
     thinking: str | None = None,
+    *, json_mode: bool = False,
 ) -> str:
     endpoint = api_base.rstrip("/") + "/chat/completions"
     payload = {
@@ -48,6 +49,8 @@ def call_llm(
     }
     if thinking is not None:
         payload['thinking'] = {'type': thinking}
+    if json_mode:
+        payload['response_format'] = {'type': 'json_object'}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     req = request.Request(
         endpoint,
@@ -143,6 +146,7 @@ def call_llm_with_retry_result(
     max_tokens: int,
     max_attempts: int = 3,
     retry_sleep_seconds: float = 3.0,
+    *, json_mode: bool = False,
 ) -> LLMRetryResult:
     max_tokens = max(max_tokens, getattr(config, 'min_output_tokens', 0))
     current_max_tokens = max_tokens
@@ -161,6 +165,7 @@ def call_llm_with_retry_result(
                 timeout=timeout,
                 max_tokens=current_max_tokens,
                 **({'thinking': config.thinking} if getattr(config, 'thinking', None) is not None else {}),
+                **({'json_mode': True} if json_mode else {}),
             )
             return LLMRetryResult(content=current_redactor().response(content), max_tokens_used=current_max_tokens)
         except Exception as exc:  # noqa: BLE001
@@ -185,6 +190,7 @@ def call_llm_with_retry(
     max_tokens: int,
     max_attempts: int = 3,
     retry_sleep_seconds: float = 3.0,
+    *, json_mode: bool = False,
 ) -> str:
     return call_llm_with_retry_result(
         config,
@@ -194,6 +200,7 @@ def call_llm_with_retry(
         max_tokens,
         max_attempts=max_attempts,
         retry_sleep_seconds=retry_sleep_seconds,
+        **({'json_mode': True} if json_mode else {}),
     ).content
 
 

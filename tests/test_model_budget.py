@@ -28,6 +28,23 @@ def response(content='合成响应', usage=None, finish='stop'):
 
 
 class ModelUsageTests(unittest.TestCase):
+    def test_json_mode_is_explicit_and_survives_retry(self):
+        for json_mode in (False, True):
+            with self.subTest(json_mode=json_mode), patch.object(
+                    llm_client.request, 'urlopen', return_value=response('{}')) as api:
+                result = llm_client.call_llm_with_retry(
+                    CONFIG, '返回JSON', '合成输入', 10, 100, json_mode=json_mode)
+                payload = json.loads(api.call_args.args[0].data.decode('utf-8'))
+                self.assertEqual(result, '{}')
+                if json_mode:
+                    self.assertEqual(payload['response_format'], {'type': 'json_object'})
+                else:
+                    self.assertNotIn('response_format', payload)
+        with patch.object(llm_client, 'call_llm', side_effect=[
+                llm_client.LLMOutputTruncated(), '{}']) as api:
+            llm_client.call_llm_with_retry(CONFIG, 's', 'u', 10, 100, json_mode=True, retry_sleep_seconds=0)
+        self.assertEqual([call.kwargs['json_mode'] for call in api.call_args_list], [True, True])
+
     def test_incomplete_transport_retries_without_shrinking_input(self):
         failure = http.client.IncompleteRead(b'partial')
         with patch.object(llm_client, 'call_llm', side_effect=[failure, 'complete']) as api:
@@ -159,7 +176,10 @@ class ModelUsageTests(unittest.TestCase):
             chunk = json.dumps({key: [] for key in ('events', 'relation_signals', 'persona_signals', 'counter_evidence', 'uncertainties')})
             usage = {'prompt_tokens': 100, 'completion_tokens': 10,
                      'prompt_cache_hit_tokens': 50, 'prompt_cache_miss_tokens': 50}
-            review = json.dumps({'reviews':[{'claim_id':'R_1','verdict':'pass','reason':'合成有限判断。'}]})
+            review = json.dumps({'field_checks': [dict(field=field, content_supported=True,
+                citations_complete=True, certainty_preserved=True, outcome_context_complete=True,
+                reason='合成有限判断。') for field in ('text', 'context_review', 'uncertainty')],
+                'action_checks': [], 'counter_checks': []})
             values = [response(chunk, usage), response(chunk, usage),
                       response('## 阶段总结\n合成材料\n<!-- END_MERGE_SUMMARY -->', usage),
                       response(claim_response('关系', report_kind='analysis'), usage),

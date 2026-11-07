@@ -63,6 +63,32 @@ class ClaimFactTests(unittest.TestCase):
         self.assertIn('模型解释', report)
         self.assertIn('2026-04-08 09:00:00', report)
 
+    def test_invalid_time_endpoint_and_prose_error_are_reported_together(self):
+        with self.assertRaises(ValueError) as caught:
+            self.compile(context_review='对方次日回复。',
+                time_links=[{'from_id': self.ids[0], 'to_id': self.ids[1]}])
+        self.assertIn('本条引用', str(caught.exception))
+        self.assertIn('次日', str(caught.exception))
+
+    def test_time_contract_distinguishes_action_quotes_from_narrative_retelling(self):
+        contract = claim_contract('analysis')
+        self.assertIn('text、context_review、uncertainty及证据reason中的原话复述也须去除时间词', contract)
+        self.assertIn('原话时间只保留在actions的quote或程序展示的引文中', contract)
+
+    def test_action_and_time_errors_identify_every_invalid_entry(self):
+        actions = [
+            dict(evidence_id=self.ids[0], quote='我准备把文件发给小林。',
+                 actor='对方', target='同事', state='planned', confirmation=None),
+            dict(evidence_id=self.ids[1], quote='我已经发给小林了。',
+                 actor='我', target='小林', state='reported_done', confirmation=None),
+        ]
+        with self.assertRaises(ValueError) as caught:
+            self.compile(actions=actions,
+                time_links=[{'from_id': self.ids[0], 'to_id': self.ids[1]}])
+        error = str(caught.exception)
+        for detail in ('actions[0]', '主体', '对象', 'actions[1]', self.ids[1], 'time_links[0]'):
+            self.assertIn(detail, error)
+
     def test_quoted_prose_requires_this_claims_own_citation(self):
         self.prepared.prompt += '\n## 逐字引语校验（v1）'
         for field in ('text', 'context_review', 'uncertainty'):
@@ -348,7 +374,8 @@ class ClaimFactTests(unittest.TestCase):
         import analysis_service
         import llm_client
         from artifact_audit import audit_artifacts
-        from claim_semantic_review import REVIEW_INSTRUCTIONS
+        from claim_field_review import FIELD_REVIEW_INSTRUCTIONS
+        from claim_fixtures import field_review_response
         stages = []
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
@@ -366,11 +393,12 @@ class ClaimFactTests(unittest.TestCase):
                                                    'source_message_ids': ['m1'], 'confidence': 'low'}],
                                        **{key: [] for key in ('relation_signals', 'persona_signals',
                                                              'counter_evidence', 'uncertainties')}})
-                if kwargs['system_prompt'] == REVIEW_INSTRUCTIONS:
+                if kwargs['system_prompt'] == FIELD_REVIEW_INSTRUCTIONS:
                     stages.append('review')
-                    return json.dumps({'reviews': [{'claim_id': 'R_1', 'verdict': 'pass', 'reason': '原话为计划。',
-                        'action_checks': [{'action_index': 1, 'actor_supported': True, 'target_supported': True,
-                                           'state_supported': True, 'reason': '只表示计划，结果未知。'}]}]})
+                    data = json.loads(prompt.split('\n本条草稿及登记引用\n', 1)[1])
+                    self.assertEqual(data['actions'][0]['quote_actor'], '我')
+                    self.assertEqual(data['actions'][0]['state'], 'planned')
+                    return field_review_response(prompt)
                 kind = 'persona' if '## 本次具体任务：对方人物侧写' in prompt else 'analysis'
                 stages.append(kind)
                 eid = re.search(r'核验引文：([EM]_[0-9a-f]{32})', prompt).group(1)

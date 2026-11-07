@@ -31,6 +31,7 @@ def run_identity(artifacts, skill_prompt, config, *, report_system_prompt=None):
     hasher.update((Path(__file__).parent / 'claim_ledger.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_facts.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_semantic_review.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'claim_field_review.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_source_review.py').read_bytes())
     hasher.update((Path(__file__).parent / 'report_framework.py').read_bytes())
     system = report_system_prompt if report_system_prompt is not None else build_report_system_prompt(skill_prompt)
