@@ -188,7 +188,8 @@ def audit_claim_report(claim_path, report_path, evidence_ledger, name, input_pat
         raise ValueError('原文事实与当前来源不一致。')
     if rebuilt['claims'] != stored['claims']:
         raise ValueError('结论编号或覆盖范围不一致。')
-    audit_semantic_review(stored, prompt, prepared=prepared, evidence_index=_evidence_index(evidence_ledger))
+    audit_semantic_review(stored, prompt, prepared=prepared, evidence_index=_evidence_index(evidence_ledger),
+                          source_messages=evidence_ledger['source_messages'])
     report = report_path.read_text(encoding='utf-8')
     # write_report 只在正文前加来源说明。
     body = report.split('\n\n', 1)[1] if report.startswith('> 来源说明：') else report

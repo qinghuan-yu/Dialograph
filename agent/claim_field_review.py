@@ -150,12 +150,13 @@ def build_field_review_input(claim, prepared, ledger):
     # 原文已在提示中展示，校验索引只留在本机，避免重复发送整份材料。
     visible = prepared.source_positions | {
         row['position'] for row in focused_material['repetition_context']['messages']}
-    basis_ids = {f'P_{message["position"]}': message['message_id'] for message in ledger['source_messages']
-                 if message['position'] in visible and message['message_id'] in index}
+    visible_messages = [message for message in ledger['source_messages'] if message['position'] in visible]
+    basis_ids = {f'P_{message["position"]}': message['message_id'] for message in visible_messages}
+    # 可见附件标签也能辨认话题；它们不进入可引用证据索引。
+    data['_basis_sources'] = {f'P_{message["position"]}': {
+        'quote': message['content'], 'message_id': message['message_id']} for message in visible_messages}
+    data['_basis_sources'].update(citation_catalog(citations))
     basis_ids.update({alias: eid for eid, alias in aliases.items()})
-    data['_basis_sources'] = {alias: {'quote': index[eid]['evidence'],
-        'message_id': index[eid]['grounding']['source_refs'][0]['message_id']}
-        for alias, eid in basis_ids.items()}
     data['_basis_ids'] = basis_ids
     return prompt, data, aliases
 
@@ -270,7 +271,8 @@ def review_claim_fields(compiled, prepared, ledger, request, directory, *, cache
             'input_sha256': compiled['input_sha256'], 'reviews': reviews}
 
 
-def audit_field_review(compiled, record, *, schema_version=FIELD_REVIEW_VERSION, evidence_index=None):
+def audit_field_review(compiled, record, *, schema_version=FIELD_REVIEW_VERSION, evidence_index=None,
+                       source_messages=()):
     if (not isinstance(record, dict)
             or set(record) != {'schema_version', 'claims_sha256', 'input_sha256', 'reviews'}
             or record['schema_version'] != schema_version
@@ -285,6 +287,8 @@ def audit_field_review(compiled, record, *, schema_version=FIELD_REVIEW_VERSION,
                    or not isinstance(row['claim_id'], str) for row in rows)
             or {row['claim_id'] for row in rows} != set(expected)):
         raise ValueError('逐字段复核记录缺项、重复或包含未知结论。')
+    raw_sources = {message['message_id']: {'quote': message['content'], 'message_id': message['message_id']}
+                   for message in source_messages}
     for row in rows:
         claim = expected[row['claim_id']]
         identity = row['material_sha256']
@@ -302,6 +306,8 @@ def audit_field_review(compiled, record, *, schema_version=FIELD_REVIEW_VERSION,
                 'source': evidence_index[eid]['grounding']['source_refs'][0]} for eid in ids]
             data['_basis_sources'] = citation_catalog(data['registered_citations'])
             for eid in basis_source_ids(checks):
+                if eid in raw_sources:
+                    data['_basis_sources'][eid] = raw_sources[eid]
                 item = evidence_index.get(eid)
                 if item and len(item['grounding'].get('source_refs', [])) == 1:
                     data['_basis_sources'][eid] = {'quote': item['evidence'],

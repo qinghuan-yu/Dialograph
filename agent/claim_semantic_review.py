@@ -182,7 +182,7 @@ def review_claims(compiled, prepared, evidence_index, request, directory, *, sou
     return record
 
 
-def audit_semantic_review(stored, prompt, *, prepared=None, evidence_index=None):
+def audit_semantic_review(stored, prompt, *, prepared=None, evidence_index=None, source_messages=()):
     from claim_source_review import SOURCE_MARKER, audit_source_review
     from claim_field_review import (FIELD_REVIEW_MARKER, FIELD_REVIEW_VERSION, audit_field_review,
                                     V2_FIELD_REVIEW_MARKER, V2_FIELD_REVIEW_VERSION,
@@ -193,7 +193,8 @@ def audit_semantic_review(stored, prompt, *, prepared=None, evidence_index=None)
             raise ValueError('逐字段复核与来源提取实验的门槛不一致。')
         version = (FIELD_REVIEW_VERSION if FIELD_REVIEW_MARKER in prompt else
                    V2_FIELD_REVIEW_VERSION if V2_FIELD_REVIEW_MARKER in prompt else LEGACY_FIELD_REVIEW_VERSION)
-        audit_field_review(stored, review, schema_version=version, evidence_index=evidence_index)
+        audit_field_review(stored, review, schema_version=version, evidence_index=evidence_index,
+                           source_messages=source_messages)
         return
     if isinstance(review, dict) and review.get('schema_version') in (FIELD_REVIEW_VERSION, V2_FIELD_REVIEW_VERSION, LEGACY_FIELD_REVIEW_VERSION):
         raise ValueError('逐字段复核记录缺少实际输入的对应门槛。')

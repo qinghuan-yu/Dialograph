@@ -13,7 +13,7 @@ from analyze import parse_chat_messages
 from evidence_grounding import ground_document, grounding_issues, GROUNDING_VERSION, LEDGER_VERSION
 
 
-def source(text_overrides=None, *, session_break=140):
+def source(text_overrides=None, *, session_break=140, type_overrides=None):
     start = datetime(2021, 3, 2, 9)
     texts = ['普通补充' + str(n) for n in range(140)]
     texts[5] = '能听我说一件事吗？'
@@ -23,7 +23,7 @@ def source(text_overrides=None, *, session_break=140):
     texts[120] = '问题说清楚了，我已经联系相关人员处理。'
     for number, text in (text_overrides or {}).items():
         texts[number] = text
-    rows = [{'type': '文本消息', 'isSend': n % 2,
+    rows = [{'type': (type_overrides or {}).get(n, '文本消息'), 'isSend': n % 2,
              'formattedTime': (start + timedelta(seconds=n * 10, days=int(n >= session_break))).strftime('%Y-%m-%d %H:%M:%S'),
              'content': text} for n, text in enumerate(texts)]
     messages = parse_chat_messages(rows)['messages']
