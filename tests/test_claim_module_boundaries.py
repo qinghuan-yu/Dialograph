@@ -17,7 +17,7 @@ class ClaimModuleIdentityTests(unittest.TestCase):
         config = SimpleNamespace(model='synthetic', api_base='http://invalid.local', thinking=None)
         before = run_identity(artifacts, '合成框架', config, report_system_prompt='合成系统')
         original = Path.read_bytes
-        for changed_file in ('claim_compiler.py', 'claim_repair.py'):
+        for changed_file in ('claim_compiler.py', 'claim_repair.py', 'claim_review_basis.py'):
             def read_bytes(path):
                 if path.name == changed_file:
                     content = original(path) if path.exists() else b''

@@ -178,7 +178,7 @@ class ModelUsageTests(unittest.TestCase):
                      'prompt_cache_hit_tokens': 50, 'prompt_cache_miss_tokens': 50}
             review = json.dumps({'field_checks': [dict(field=field, content_supported=True,
                 citations_complete=True, certainty_preserved=True, outcome_context_complete=True,
-                reason='合成有限判断。') for field in ('text', 'context_review', 'uncertainty')],
+                reason='合成有限判断。', basis=[]) for field in ('text', 'context_review', 'uncertainty')],
                 'action_checks': [], 'counter_checks': []})
             values = [response(chunk, usage), response(chunk, usage),
                       response('## 阶段总结\n合成材料\n<!-- END_MERGE_SUMMARY -->', usage),

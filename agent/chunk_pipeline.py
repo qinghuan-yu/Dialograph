@@ -11,6 +11,7 @@ from report_generation import prepare_final_input, build_report_system_prompt, F
 from claim_ledger import render_claim_report, VERSION as CLAIM_VERSION
 from claim_retrieval import generate_reviewed_claims
 from claim_field_review import FIELD_REVIEW_INSTRUCTIONS, review_json_mode
+from config import report_context_options
 from report_output import write_report
 from run_promotion import promote_successful_run
 from evidence_grounding import ground_document, digest
@@ -123,6 +124,7 @@ def run_single_workflow(
         evidence_summary,
         phase_summaries,
         ledger=ledger,
+        context_options=report_context_options(config),
     )
     prepared = make_input()
     final_prompt = prepared.prompt

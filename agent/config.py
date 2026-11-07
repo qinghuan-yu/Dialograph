@@ -20,6 +20,13 @@ class LLMConfig:
     source: str
     thinking: str | None = None
     min_output_tokens: int = 0
+    report_context_bytes: int = 48000
+    report_context_mode: str = 'retrieval'
+
+
+def report_context_options(config):
+    return {'max_bytes': getattr(config, 'report_context_bytes', 48000),
+            'prefer_complete': getattr(config, 'report_context_mode', 'retrieval') == 'complete_if_fits'}
 
 
 def load_env_file(env_path: Path) -> bool:
@@ -68,6 +75,16 @@ def load_llm_config(workspace: Path) -> LLMConfig:
     if min_output_tokens < 0:
         raise ValueError('LLM_MIN_OUTPUT_TOKENS 必须为非负整数。')
 
+    try:
+        report_context_bytes = int(os.getenv('LLM_REPORT_CONTEXT_BYTES', '48000'))
+    except ValueError as exc:
+        raise ValueError('LLM_REPORT_CONTEXT_BYTES 必须为正整数。') from exc
+    if report_context_bytes <= 0:
+        raise ValueError('LLM_REPORT_CONTEXT_BYTES 必须为正整数。')
+    report_context_mode = os.getenv('LLM_REPORT_CONTEXT_MODE', 'retrieval')
+    if report_context_mode not in ('retrieval', 'complete_if_fits'):
+        raise ValueError('LLM_REPORT_CONTEXT_MODE 必须为 retrieval 或 complete_if_fits。')
+
     return LLMConfig(
         api_base=api_base,
         api_key=api_key,
@@ -75,4 +92,6 @@ def load_llm_config(workspace: Path) -> LLMConfig:
         source=source,
         thinking=thinking,
         min_output_tokens=min_output_tokens,
+        report_context_bytes=report_context_bytes,
+        report_context_mode=report_context_mode,
     )

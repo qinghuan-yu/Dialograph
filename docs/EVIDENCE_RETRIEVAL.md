@@ -55,6 +55,21 @@ python agent/evidence_store.py ingest "旧账本.json" --input "talks/原始导�
 
 ## 查询结果与来源
 
+### 报告材料预算与完整原文模式
+
+进入命题检索阶段的报告默认使用 `LLM_REPORT_CONTEXT_MODE=retrieval`，连续原文预算由 `LLM_REPORT_CONTEXT_BYTES` 设置，默认48,000字节。两份报告共用这些配置，变更后旧报告和流程缓存不再匹配。此预算只约束检索阶段的原文材料，实际模型请求还含指令、统计、引用和复核结构；无需进入检索的短会话仍使用原有窗口流程。
+
+对于支持长上下文的服务，可以显式配置：
+
+```env
+LLM_REPORT_CONTEXT_BYTES=800000
+LLM_REPORT_CONTEXT_MODE=complete_if_fits
+```
+
+该模式在完整脱敏快照能放入预算时保留全部会话，包括没有命中规划查询的消息。检索记录标为 `complete-source-if-fit-v1`，并列出全部会话与实际位置；原文超预算时保持原有完整查询组选材，记录实际使用的 `complete-query-balanced-v3`。默认模式不变，不自动提高预算。配置值应符合所用服务的输入容量。
+
+完整展示只解决材料可见性，不证明模型正确理解全部内容，也不改变结论引用、动作状态或语义复核门槛。
+
 | 分组 | 内容 | `eligible_as_support` |
 |---|---|---|
 | `support` | 已唯一匹配原文的事件、人物信号和支持方向关系信号，属于支持候选 | `true` |

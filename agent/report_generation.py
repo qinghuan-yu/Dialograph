@@ -21,6 +21,7 @@ from claim_ledger import ReportInput, claim_contract, context_catalog, generate_
 from claim_retrieval import retrieve_claim_context, retrieval_notes
 from evidence_grounding import digest
 from claim_field_review import FIELD_REVIEW_INSTRUCTIONS, review_json_mode
+from config import report_context_options
 
 
 def load_evidence_summary(artifacts: dict) -> str:
@@ -47,6 +48,7 @@ def _prepare_shared_materials(
     *,
     ledger: dict | None = None,
     review_questions: list[dict] | None = None,
+    context_options: dict | None = None,
 ) -> tuple[str, EvidenceContext]:
     stats_summary = limit_text_bytes(stats_summary, FINAL_STATS_SUMMARY_MAX_BYTES)
     coverage_summary = limit_text_bytes(coverage_summary, FINAL_COVERAGE_SUMMARY_MAX_BYTES)
@@ -59,7 +61,7 @@ def _prepare_shared_materials(
         and (review_questions is not None or '- schema: ' in evidence_summary or '- 总数 ' in evidence_summary)
     )
     if use_full_ledger and review_questions is not None:
-        context = retrieve_claim_context(ledger, review_questions)
+        context = retrieve_claim_context(ledger, review_questions, **(context_options or {}))
         context = context.with_selected_ids(set(context.retrieval['source_message_ids']))
     elif use_full_ledger:
         context = select_evidence_context(evidence_summary + '\n' + joined, ledger, select_from_ledger=True)
@@ -145,6 +147,7 @@ def prepare_final_input(
     evidence_summary: str,
     phase_summaries: list[str],
     *, ledger: dict | None = None, review_questions: list[dict] | None = None,
+    context_options: dict | None = None,
 ) -> ReportInput:
     shared_prefix, context = _prepare_shared_materials(
         name,
@@ -154,6 +157,7 @@ def prepare_final_input(
         phase_summaries,
         ledger=ledger,
         review_questions=review_questions,
+        context_options=context_options,
     )
     task_tail = """
 ## 本次具体任务：关系与行为模式分析报告
@@ -181,6 +185,7 @@ def prepare_persona_input(
     phase_summaries: list[str],
     relation_report: str,
     *, ledger: dict | None = None, review_questions: list[dict] | None = None,
+    context_options: dict | None = None,
 ) -> ReportInput:
     shared_prefix, context = _prepare_shared_materials(
         name,
@@ -190,6 +195,7 @@ def prepare_persona_input(
         phase_summaries,
         ledger=ledger,
         review_questions=review_questions,
+        context_options=context_options,
     )
     relation_report = limit_text_bytes(relation_report, 2000)
     task_tail = f"""
@@ -262,6 +268,7 @@ def generate_persona_report(
         relation_report,
         ledger=ledger,
         review_questions=retrieval['questions'] if retrieval is not None else None,
+        context_options=report_context_options(config),
     )
     system_prompt = (report_system_prompt if report_system_prompt is not None else
                      build_report_system_prompt(persona_skill_prompt=persona_skill_prompt))

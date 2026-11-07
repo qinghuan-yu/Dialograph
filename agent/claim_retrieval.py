@@ -62,7 +62,7 @@ def parse_review_questions(response):
     return questions
 
 
-def retrieve_claim_context(ledger, questions, *, max_bytes=CONTEXT_MAX_BYTES):
+def retrieve_claim_context(ledger, questions, *, max_bytes=CONTEXT_MAX_BYTES, prefer_complete=False):
     """扫描当前快照的原文及已绑定条目，按完整会话和字节预算选材。"""
     questions = parse_review_questions(json.dumps({'questions': questions}, ensure_ascii=False))
     validate_grounded_ledger(ledger)
@@ -103,8 +103,17 @@ def retrieve_claim_context(ledger, questions, *, max_bytes=CONTEXT_MAX_BYTES):
     groups = [(question, frozenset(session_numbers[n] for n in matched), weight)
               for question, matched, weight in query_groups]
     sessions = [ReviewSession(*ranges[number]) for number in sorted(matched_session_numbers)]
-    context = select_evidence_context('', ledger, max_bytes=max_bytes, select_from_ledger=True,
-                                      review_sessions=sessions, review_query_groups=groups)
+    context = None
+    if prefer_complete:
+        complete = select_evidence_context('', ledger, max_bytes=max_bytes, select_from_ledger=True,
+            review_sessions=[ReviewSession(*bounds) for bounds in ranges],
+            review_query_groups=[(0, frozenset(range(len(ranges))), 1.0)])
+        if len(complete.source_positions) == len(messages):
+            context = complete
+    complete_selected = context is not None
+    if context is None:
+        context = select_evidence_context('', ledger, max_bytes=max_bytes, select_from_ledger=True,
+                                          review_sessions=sessions, review_query_groups=groups)
     visible = context.source_positions
     position_sessions = {message['position']: session_index[n] for n, message in enumerate(messages)}
     visible_sessions = {position_sessions[position] for position in visible}
@@ -124,11 +133,12 @@ def retrieve_claim_context(ledger, questions, *, max_bytes=CONTEXT_MAX_BYTES):
     decisions = [{'start': messages[start]['position'], 'end': messages[end]['position'],
                   'status': ('selected' if messages[start]['position'] in visible else
                              'missing_reference' if number not in citable else 'budget_exceeded')}
-                 for number, (start, end) in enumerate(ranges) if number in hit_numbers]
+                 for number, (start, end) in enumerate(ranges) if complete_selected or number in hit_numbers]
     metadata = {'schema_version': 'claim-retrieval-v1', 'source_id': ledger['source_id'],
                 'ledger_sha256': digest(ledger), 'questions': questions, 'queries': queries,
                 'source_positions': sorted(visible), 'context_max_bytes': max_bytes,
-                'selection_policy': 'complete-query-balanced-v3', 'session_decisions': decisions,
+                'selection_policy': 'complete-source-if-fit-v1' if complete_selected else 'complete-query-balanced-v3',
+                'session_decisions': decisions,
                 'source_message_ids': sorted(eid for eid in context.context_ids if eid.startswith('M_')),
                 'source_aliases': {f'P_{message["position"]}': message['message_id'] for message in messages
                                    if message['position'] in visible and message['type'] in TEXT_TYPES},
@@ -141,6 +151,8 @@ def retrieve_claim_context(ledger, questions, *, max_bytes=CONTEXT_MAX_BYTES):
 def retrieval_notes(metadata):
     lines = ['\n## 本轮命题检索覆盖', '检索材料指纹：S_' + digest(metadata),
              '以下为选材覆盖计数，命中不证明支持或反驳。完整查询与待复核命题保存在来源记录中。未完整展示的过程不能据此作总体否定。']
+    if metadata.get('selection_policy') == 'complete-source-if-fit-v1':
+        lines.append('完整脱敏快照在本次预算内，已展示全部原文消息，包括没有命中检索词的会话；不代表模型已正确理解全部内容。')
     for number in range(1, len(metadata['questions']) + 1):
         rows = [row for row in metadata['queries'] if row['question'] == number]
         statuses = []

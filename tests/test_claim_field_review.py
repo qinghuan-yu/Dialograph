@@ -23,7 +23,7 @@ def passing_checks(data):
     return {
         'field_checks': [dict(field=field, content_supported=True, citations_complete=True,
                               certainty_preserved=True, outcome_context_complete=True,
-                              reason='合成依据一致。') for field in data['statement_fields']],
+                              reason='合成依据一致。', basis=[]) for field in data['statement_fields']],
         'action_checks': [dict(action_index=number, actor_supported=True, target_supported=True,
                                state_supported=True, reason='原话逐字指代和意向状态一致。')
                           for number in range(1, len(data['actions']) + 1)],
@@ -127,6 +127,7 @@ class ClaimFieldReviewTests(unittest.TestCase):
         checks = passing_checks({'statement_fields': statement_fields(claim), 'actions': [],
                                  'counter_evidence': []})
         for row in checks['field_checks']:
+            row.pop('basis')
             row.pop('certainty_preserved')
             row.pop('outcome_context_complete')
         compiled['semantic_review'] = {
@@ -151,6 +152,26 @@ class ClaimFieldReviewTests(unittest.TestCase):
                     checks['field_checks'][0][flag] = value
                 with self.subTest(flag=flag, value=value), self.assertRaises(RuntimeError):
                     parse_field_checks(json.dumps(checks), data)
+
+    def test_v2_records_keep_their_old_audit_gate_and_cannot_replace_v3(self):
+        from claim_field_review import V2_FIELD_REVIEW_VERSION, V2_FIELD_REVIEW_MARKER, FIELD_REVIEW_MARKER
+        from claim_semantic_review import audit_semantic_review
+        from evidence_grounding import digest
+        data = review_data()
+        data['counter_evidence'] = []
+        checks = passing_checks(data)
+        for row in checks['field_checks']:
+            row.pop('basis')
+        claim = dict(claim_id='C_synthetic', text=data['statement_fields']['text'],
+            context_review='', uncertainty=data['statement_fields']['uncertainty'],
+            actions=data['actions'], counter_evidence=data['counter_evidence'], limiting_evidence=[])
+        stored = {'claims': [claim], 'input_sha256': 'synthetic-input'}
+        stored['semantic_review'] = {'schema_version': V2_FIELD_REVIEW_VERSION,
+            'claims_sha256': digest(stored['claims']), 'input_sha256': stored['input_sha256'],
+            'reviews': [dict(claim_id=claim['claim_id'], material_sha256='a' * 64, **checks)]}
+        audit_semantic_review(stored, V2_FIELD_REVIEW_MARKER)
+        with self.assertRaisesRegex(ValueError, '逐字段'):
+            audit_semantic_review(stored, FIELD_REVIEW_MARKER)
 
     def test_strength_and_known_outcome_failures_require_revision(self):
         from claim_field_review import parse_field_checks
@@ -207,6 +228,7 @@ class ClaimFieldReviewTests(unittest.TestCase):
 
     def test_review_reuses_identical_material_and_rechecks_changed_text_or_context(self):
         from claim_field_review import review_claim_fields, audit_field_review
+        from claim_compiler import _evidence_index
         from claim_fixtures import claim_response
         from claim_ledger import compile_claims
         from report_generation import prepare_final_input
@@ -223,7 +245,7 @@ class ClaimFieldReviewTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             record = review_claim_fields(compiled, prepared, ledger, request, root / 'first', cache=cache)
-            audit_field_review(compiled, record)
+            audit_field_review(compiled, record, evidence_index=_evidence_index(ledger))
             repeated = review_claim_fields(compiled, prepared, ledger, request, root / 'repeat', cache=cache)
             self.assertEqual(record, repeated)
             self.assertEqual(request.call_count, 1)
@@ -237,7 +259,7 @@ class ClaimFieldReviewTests(unittest.TestCase):
         tampered = copy.deepcopy(record)
         tampered['reviews'][0]['field_checks'].pop()
         with self.assertRaises(ValueError):
-            audit_field_review(compiled, tampered)
+            audit_field_review(compiled, tampered, evidence_index=_evidence_index(ledger))
 
     def test_failed_fields_block_publication_and_invalid_protocol_has_one_repair(self):
         from claim_field_review import review_claim_fields

@@ -66,6 +66,8 @@ LLM_MODEL=deepseek-v4-flash
 
 思考模型可通过 `LLM_MIN_OUTPUT_TOKENS=24000` 提高各阶段的最低输出额度，默认值为0。服务可能将思考与正文共同计入输出额度，实际费用按返回用量核对。初始额度超过8,000时，截断重试最多提升至初始额度的两倍，请按服务支持范围设置。`.env` 中每个配置键只保留一个有效值，同名键采用首次出现的值，已有进程环境变量优先。
 
+报告命题检索阶段的连续原文预算默认48,000字节。长上下文服务可显式设置 `LLM_REPORT_CONTEXT_BYTES` 和 `LLM_REPORT_CONTEXT_MODE=complete_if_fits`，在预算允许时使用完整脱敏原文；超预算仍按查询选材。配置与覆盖记录见[本地证据检索](docs/EVIDENCE_RETRIEVAL.md)。
+
 ## 运行方式
 
 需要 Python 3.10+。证据检索还需要 Python 自带的 SQLite 支持 FTS5 `trigram`；缺少该功能时会明确报错，已验证环境见 [本地证据检索](docs/EVIDENCE_RETRIEVAL.md)。

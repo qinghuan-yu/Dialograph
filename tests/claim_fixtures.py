@@ -7,7 +7,7 @@ def field_review_response(prompt):
     return json.dumps({
         'field_checks': [dict(field=field, content_supported=True, citations_complete=True,
                               certainty_preserved=True, outcome_context_complete=True,
-                              reason='合成流程替身确认该字段的有限判断。') for field in data['statement_fields']],
+                              reason='合成流程替身确认该字段的有限判断。', basis=[]) for field in data['statement_fields']],
         'action_checks': [dict(action_index=number, actor_supported=True, target_supported=True,
                                state_supported=True, reason='合成动作逐项一致。')
                           for number in range(1, len(data['actions']) + 1)],
