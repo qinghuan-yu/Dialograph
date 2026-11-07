@@ -2,6 +2,8 @@
 
 ## 生成链路
 
+实现按职责分为 `claim_compiler.py`（协议、来源校验与编译）、`claim_repair.py`（完整条目修订及纠错材料）和 `claim_ledger.py`（有限重试、渲染与审计）。原有 `claim_ledger` 导入入口继续兼容，拆分不改变提示词、证据门槛或重试次数。模块边界与后续整理建议见[可维护性检查](MAINTAINABILITY_REVIEW.md)。
+
 ```text
 已绑定证据 → 预算选择与连续原文 → 模型输出结论 JSON
                                   → 本机校验 → Markdown 报告 + 结论账本

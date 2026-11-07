@@ -29,6 +29,8 @@ def run_identity(artifacts, skill_prompt, config, *, report_system_prompt=None):
     hasher.update((Path(__file__).parent / 'report_context.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_retrieval.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_ledger.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'claim_compiler.py').read_bytes())
+    hasher.update((Path(__file__).parent / 'claim_repair.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_facts.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_semantic_review.py').read_bytes())
     hasher.update((Path(__file__).parent / 'claim_field_review.py').read_bytes())

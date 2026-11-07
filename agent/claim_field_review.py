@@ -78,7 +78,7 @@ def repetition_context(messages, citations, *, max_bytes=24000):
 
 
 def build_field_review_input(claim, prepared, ledger):
-    from claim_ledger import _evidence_index
+    from claim_compiler import _evidence_index
     from claim_semantic_review import build_review_prompt
     index = _evidence_index(ledger)
     ids = (claim['supporting_evidence'] + [row['evidence_id'] for row in claim['counter_evidence']]
