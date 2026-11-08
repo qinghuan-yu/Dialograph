@@ -218,6 +218,11 @@ progress::-moz-progress-bar { background: var(--accent); }
 .report-content ol, .report-content ul { padding-left: 1.5em; }
 .report-content li { margin: .65em 0; }
 .report-content li > ul, .report-content li > ol { margin-block: .3em; }
+.report-facts { margin-block: var(--sp-6); border: 1px solid var(--line); border-radius: var(--radius); }
+.report-facts > summary { padding: var(--sp-4); background: var(--soft); border-radius: inherit; font-family: var(--ui); }
+.report-facts > summary h2 { margin: 0; font-size: var(--fs-lg); }
+.report-facts-body { padding: 0 var(--sp-4) var(--sp-4); }
+.report-facts-body > :last-child { margin-bottom: 0; }
 .claim-label { display: inline-block; margin-right: .5em; padding: 0 6px; font: var(--fw-strong) var(--fs-xs)/1.8 var(--ui); border-radius: var(--radius-sm); vertical-align: .1em; color: var(--claim-fact); background: var(--success-bg); }
 .claim-inference { color: var(--claim-inference); background: var(--info-bg); }
 .claim-hypothesis { color: var(--warning); background: var(--warning-bg); }
@@ -240,13 +245,13 @@ progress::-moz-progress-bar { background: var(--accent); }
 .evidence-source mark { background: var(--highlight); color: inherit; }
 
 /* 引用原文弹窗 */
-.citation-dialog { width: min(680px, calc(100vw - 32px)); max-height: min(80vh, 800px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--panel-radius); background: var(--bg); color: var(--text); }
+.citation-dialog { width: min(680px, calc(100vw - 32px)); height: min(70vh, 640px); height: min(70dvh, 640px); max-height: calc(100dvh - 32px); padding: 0; overflow: hidden; border: 1px solid var(--line); border-radius: var(--panel-radius); background: var(--bg); color: var(--text); }
 .citation-dialog[open] { display: flex; flex-direction: column; }
 .citation-dialog::backdrop { background: rgb(32 35 31 / 35%); animation: fade-in var(--dur) var(--ease); }
-.citation-dialog[open] { animation: dialog-in var(--dur) var(--ease); }
+.citation-dialog[open] { animation: fade-in var(--dur) var(--ease); }
 .citation-header { flex: none; display: flex; align-items: center; justify-content: space-between; gap: var(--sp-4); padding: var(--sp-4) var(--sp-5); border-bottom: 1px solid var(--line); }
 .citation-header h3 { margin: 0; font-size: var(--fs-lg); }
-.citation-dialog .evidence-source { min-height: 0; overflow: auto; overscroll-behavior: contain; margin: 0; padding: var(--sp-5); border-radius: 0; background: var(--surface); font: var(--fw-body) var(--fs-sm)/1.8 var(--ui); overflow-wrap: anywhere; }
+.citation-dialog .evidence-source { flex: 1; min-height: 0; overflow: auto; scrollbar-gutter: stable; overscroll-behavior: contain; margin: 0; padding: var(--sp-5); border-radius: 0; background: var(--surface); font: var(--fw-body) var(--fs-sm)/1.8 var(--ui); overflow-wrap: anywhere; }
 .citation-dialog .source-message { margin: 6px 0 var(--sp-5); padding: var(--sp-3); border-radius: var(--radius); background: var(--soft); }
 
 /* 侧栏 */
@@ -313,7 +318,6 @@ progress::-moz-progress-bar { background: var(--accent); }
 @keyframes reveal { from { opacity: 0; transform: translateY(-4px); } }
 @keyframes fade-up { from { opacity: 0; transform: translateY(4px); } }
 @keyframes fade-in { from { opacity: 0; } }
-@keyframes dialog-in { from { opacity: 0; transform: translateY(8px) scale(.98); } }
 @keyframes pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }

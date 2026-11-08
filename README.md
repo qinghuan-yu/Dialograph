@@ -2,6 +2,8 @@
 
 Dialograph 将用户自愿提供的本地对话导出数据整理为结构化关系档案，帮助用户理解沟通模式、关系动态、人物印象与互动边界。
 
+本版以“可回查原文、需人工确认”为交付目标，已进入使用与维护阶段。队友接手可先读[交接指南](docs/HANDOFF.md)，了解演示步骤、检查边界与维护方式。
+
 ## 输入、过程、输出
 
 输入：
@@ -124,7 +126,7 @@ python agent/run_workflow.py 名称关键词 --force-persona
 python agent/run_workflow.py --chunk-size 900 --chunk-max-bytes 18000 --chunk-max-prompt-bytes 32000
 ```
 
-默认单块原文上限为 `18000` 字节，并额外按实际提示词大小控制在约 `32000` 字节内。分块阶段只要求模型输出紧凑、合法的 JSON 证据对象，不再要求每块生成长篇 Markdown 分析，以降低 `max_tokens` 截断、格式跑偏和远端断连概率。分块请求默认使用 `--chunk-timeout 180`，新分块成功后默认按 `--chunk-sleep 1.0` 做轻微冷却；阶段总结、最终报告和人物侧写仍使用全局 `--timeout`。只有分块阶段遇到远端连接断开、超时、`413` 等可恢复错误时，工作流才会自动缩小分块和提示词预算，并为当前对象重跑一次新的 run，降低长对话首块过大导致的失败概率；最终报告阶段失败不会触发重新分块。如需关闭该行为，可加 `--no-auto-shrink`，如需关闭分块冷却可加 `--chunk-sleep 0`。
+默认单块原文上限为 `18000` 字节，并额外按实际提示词大小控制在约 `32000` 字节内。分块阶段只要求模型输出紧凑、合法的 JSON 证据对象，不再要求每块生成长篇 Markdown 分析，以降低 `max_tokens` 截断、格式跑偏和远端断连概率。分块请求默认使用 `--chunk-timeout 180`，新分块成功后默认按 `--chunk-sleep 1.0` 做轻微冷却；阶段总结、最终报告和人物侧写仍使用全局 `--timeout`。只有分块阶段遇到远端连接断开、超时、`413` 等可恢复错误时，工作流才会自动缩小分块和提示词预算，并为当前对象创建更小分块的新 run，最多缩块重启3次，降低长对话首块过大导致的失败概率；最终报告阶段失败不会触发重新分块。如需关闭该行为，可加 `--no-auto-shrink`，如需关闭分块冷却可加 `--chunk-sleep 0`。
 
 从未完成的 run 继续：
 
@@ -361,9 +363,12 @@ analysis/临时文件/{对象名}/latest_run.json
 
 ## 文档索引
 
+- [队友接手指南](docs/HANDOFF.md)：当前交付状态、演示、代码地图、验证与清理边界。
 - [聊天导入协议](docs/CONVERSATION_INPUT.md)：格式、字段与合成样例。
 - [数据脱敏](docs/PRIVACY_REDACTION.md)：自动规则、补充词和本机数据。
 - [证据绑定](docs/EVIDENCE_GROUNDING.md)：编号、引文位置与核验。
 - [结论账本](docs/CLAIM_LEDGER.md)：结论支持与反证、适用范围、校验和报告生成。
 - [证据检索](docs/EVIDENCE_RETRIEVAL.md)：网页查询、命令行与报告回查。
 - [模型用量与缓存](docs/MODEL_BUDGET.md)：请求计数、缓存命中与统计口径。
+- [语义验收记录](docs/SEMANTIC_EVALUATION.md)：本版验收边界及历史模型实验。
+- [可维护性检查](docs/MAINTAINABILITY_REVIEW.md)：已完成的职责拆分与后续维护建议。

@@ -119,7 +119,7 @@ function renderMarkdown(text, container, metadata = {}, createCitations) {
   const { content, ids, entries } = reportCitationData(reportBody(text).replace(/<!--[\s\S]*?-->/g, ""), metadata);
   const citations = ids.length ? createCitations(ids, entries, metadata, container) : null;
   const lines = content.split(/\r?\n/);
-  let code = null, fence = null, quote = null, paragraph = null, lists = [];
+  let code = null, fence = null, quote = null, paragraph = null, lists = [], target = container;
   const tableLine = line => /^\s*\|.*\|\s*$/.test(line);
   const tableRow = (line, heading) => {
     const row = element("tr");
@@ -137,16 +137,16 @@ function renderMarkdown(text, container, metadata = {}, createCitations) {
       else code.textContent += line + "\n";
       continue;
     }
-    if (marker) { code = element("pre", ""); fence = marker[1]; container.append(code); lists = []; quote = paragraph = null; continue; }
+    if (marker) { code = element("pre", ""); fence = marker[1]; target.append(code); lists = []; quote = paragraph = null; continue; }
     if (!line.trim()) { quote = paragraph = null; continue; }
     if (/^\s{0,3}(?:(?:\*\s*){3,}|(?:-\s*){3,}|(?:_\s*){3,})$/.test(line)) {
-      container.append(element("hr")); lists = []; quote = paragraph = null; continue;
+      target.append(element("hr")); lists = []; quote = paragraph = null; continue;
     }
     if (tableLine(line) && /^\s*\|[\s:|\-]+\|\s*$/.test(lines[index + 1] || "")) {
       const wrap = element("div", undefined, "table-wrap"), table = element("table"), head = element("thead"), body = element("tbody");
       head.append(tableRow(line, true)); index += 1;
       while (index + 1 < lines.length && tableLine(lines[index + 1])) body.append(tableRow(lines[++index], false));
-      table.append(head, body); wrap.append(table); container.append(wrap); lists = []; quote = paragraph = null; continue;
+      table.append(head, body); wrap.append(table); target.append(wrap); lists = []; quote = paragraph = null; continue;
     }
     const item = /^(\s*)([-+*]|\d+[.)])\s+(.*)/.exec(line);
     if (item) {
@@ -155,19 +155,31 @@ function renderMarkdown(text, container, metadata = {}, createCitations) {
       if (!lists.length || indent > lists.at(-1).indent) {
         const list = element(tag);
         if (tag === "ol") list.setAttribute("start", String(parseInt(item[2], 10)));
-        (lists.length ? lists.at(-1).last : container).append(list); lists.push({ indent, tag, list, last: null });
+        (lists.length ? lists.at(-1).last : target).append(list); lists.push({ indent, tag, list, last: null });
       }
       const node = element("li"); inlineText(node, item[3], citations); lists.at(-1).list.append(node); lists.at(-1).last = node; quote = paragraph = null; continue;
     }
     lists = [];
     const heading = /^(#{1,6})\s+(.*)/.exec(line);
-    if (heading) { const node = element(`h${heading[1].length}`); inlineText(node, heading[2], citations); container.append(node); quote = paragraph = null; }
+    if (heading) {
+      const level = heading[1].length;
+      if (level <= 2) target = container;
+      if (level === 2 && heading[2].trim() === "原文事实") {
+        const details = element("details", undefined, "report-facts"), summary = element("summary");
+        summary.append(element("h2", "原文事实"), element("span", "查看原话与出处", "summary-meta"));
+        target = element("div", undefined, "report-facts-body");
+        details.append(summary, target); container.append(details);
+      } else {
+        const node = element(`h${level}`); inlineText(node, heading[2], citations); target.append(node);
+      }
+      quote = paragraph = null;
+    }
     else if (/^\s*>/.test(line)) {
-      if (!quote) { quote = element("blockquote"); container.append(quote); }
+      if (!quote) { quote = element("blockquote"); target.append(quote); }
       else quote.append(element("br"));
       inlineText(quote, line.replace(/^\s*>\s?/, ""), citations); paragraph = null;
     } else {
-      if (!paragraph) { paragraph = element("p"); container.append(paragraph); }
+      if (!paragraph) { paragraph = element("p"); target.append(paragraph); }
       else paragraph.append(document.createTextNode(" "));
       inlineText(paragraph, line, citations); quote = null;
     }

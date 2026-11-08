@@ -43,7 +43,7 @@
 
 `conversation_formats.py` 在输入边界映射到现有分析器的 `session/messages` 字段（`isSend`、`formattedTime`、中文 `type`）。统计、分块与报告模块不需要分别理解各家导出格式。无 `schema` 的 JSON 仍须满足原有 WeFlow 私聊校验，不能直接混用 `text/sender` 等约定；导出工具自己的顶层 `version` 不视为协议声明。
 
-消息 `id` 进入解析结果的 `source_message_id`。这是导出方的消息来源标识；后续更新已增加快照内程序分配的消息编号、证据编号与逐字绑定，见 [原文绑定说明](EVIDENCE_GROUNDING.md)。不同导出文件中的原始 ID 是否保持一致，由导出方负责；系统不会按相同文字去重。本地关键词检索见 [证据检索](EVIDENCE_RETRIEVAL.md)，报告生成尚未接入检索增强。
+消息 `id` 进入解析结果的 `source_message_id`。这是导出方的消息来源标识；后续更新已增加快照内程序分配的消息编号、证据编号与逐字绑定，见 [原文绑定说明](EVIDENCE_GROUNDING.md)。不同导出文件中的原始 ID 是否保持一致，由导出方负责；系统不会按相同文字去重。本地关键词检索与报告命题检索见 [证据检索](EVIDENCE_RETRIEVAL.md)。报告生成在初始邻文覆盖不足时已接入完整会话检索；选材可见不等于结论正确。
 
 ## Alpha Markdown 的已支持布局
 

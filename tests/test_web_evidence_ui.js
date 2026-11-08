@@ -459,3 +459,63 @@ test("启动完整分析发送所选报告确认方式", async () => {
   await h.get("#analysis-form").listeners.submit({ preventDefault() {} });
   assert.equal(sent[0].review_mode, "model");
 });
+
+test("原文事实默认收起，模型解释和待确认提示保持可见", () => {
+  const h = harness(), target = new h.Node();
+  h.context.renderMarkdown("# 报告\n\n> 待人工确认：请回查原文。\n\n## 原文事实\n\n原话概括。\n\n### 某次交流\n\n- 事实条目\n\n## 模型解释\n\n需要核对的解释。\n\n## 待确认\n\n仍需人工核对。", target);
+  const facts = target.children.find(node => node.tag === "details");
+  assert.ok(facts, "原文事实应放在可折叠区域");
+  assert.equal(Boolean(facts.open), false, "初次阅读默认收起");
+  assert.equal(facts.attributes.open, undefined);
+  assert.equal(facts.children[0].tag, "summary");
+  assert.match(facts.children[0].textContent, /原文事实/);
+  assert.match(facts.textContent, /原话概括.*某次交流.*事实条目/);
+  assert.doesNotMatch(facts.textContent, /模型解释|需要核对的解释|仍需人工核对/);
+  assert.ok(target.children.some(node => node.tag === "blockquote" && /待人工确认/.test(node.textContent)));
+  assert.ok(target.children.some(node => node.tag === "h2" && node.textContent === "模型解释"));
+});
+
+test("事实折叠容纳所有正文块，在同级或更高标题结束且不误识别代码和引用", () => {
+  const h = harness(), target = new h.Node();
+  h.context.renderMarkdown("```md\n## 原文事实\n```\n\n> ## 原文事实\n\n## 原文事实\n\n段落\n---\n> 引用\n\n| 列 |\n| --- |\n| 值 |\n\n```text\n## 模型解释\n```\n\n1. 条目\n   - 子项\n\n# 附录\n\n附录正文\n\n## 原文事实\n\n末尾事实", target);
+  const folds = target.children.filter(node => node.tag === "details");
+  assert.equal(folds.length, 2, "仅实际标题触发折叠");
+  const facts = folds[0], body = facts.children.find(node => node.tag === "div");
+  assert.deepEqual(body.children.map(node => node.tag), ["p", "hr", "blockquote", "div", "pre", "ol"]);
+  assert.match(facts.textContent, /## 模型解释.*条目.*子项/s);
+  assert.doesNotMatch(facts.textContent, /附录正文|末尾事实/);
+  assert.ok(target.children.some(node => node.tag === "h1" && node.textContent === "附录"));
+  assert.match(folds[1].textContent, /末尾事实/);
+});
+
+test("折叠内外共享引用编号，原文弹窗独立于折叠区域", async () => {
+  const h = harness(), target = new h.Node(), id = "E_" + "1".repeat(32);
+  h.run("state.selected = 'task';");
+  h.context.renderMarkdown(`## 原文事实\n\n原话 ${id}\n\n## 模型解释\n\n解释 ${id}`, target,
+    { ledger_revision: "r1", references: { [id]: { canonical: id, status: "resolved", kind: "evidence" } } });
+  const facts = target.children.find(node => node.tag === "details");
+  assert.ok(facts, "事实引用应位于折叠区域内");
+  const buttons = h.created.filter(node => node.className === "report-citation");
+  assert.deepEqual(buttons.map(node => node.textContent), ["[1]", "[1]"]);
+  assert.equal(buttons[0].parentNode.parentNode.parentNode, facts);
+  const dialog = h.created.find(node => node.tag === "dialog");
+  assert.equal(dialog.parentNode, target, "关闭事实区域不能隐藏独立弹窗");
+  h.context.fetch = async () => h.reply({ job_id: "task", ledger_revision: "r1", reference: {
+    canonical: id, kind: "evidence", occurrences: [{ source_refs: [{ sender: "me", time: "10:00", content: "对应原文", original_index: 0 }] }],
+  } });
+  await buttons[0].click();
+  assert.equal(dialog.open, true);
+  assert.match(dialog.textContent, /对应原文/);
+  dialog.close(); assert.equal(buttons[0].focused, true);
+});
+
+test("收纳原文事实仅影响网页，Markdown 下载保留完整事实和统一脚注", () => {
+  const h = harness(), target = new h.Node(), id = "E_" + "1".repeat(32);
+  const text = `# 报告\n\n## 原文事实\n\n完整事实 ${id}\n\n## 模型解释\n\n解释 ${id}`;
+  h.context.renderMarkdown(text, target);
+  const exported = h.context.formatReportDownload(text);
+  assert.match(exported, /## 原文事实\n\n完整事实 \[\^e1\]/);
+  assert.match(exported, /## 模型解释\n\n解释 \[\^e1\]/);
+  assert.equal(exported.match(/\[\^e1\]:/g).length, 1);
+  assert.doesNotMatch(exported, /<details|<summary/);
+});
