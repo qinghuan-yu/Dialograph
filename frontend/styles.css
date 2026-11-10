@@ -99,7 +99,23 @@ form > label { display: block; font-size: var(--fs-md); margin-bottom: var(--sp-
 .source-row { display: flex; gap: var(--sp-3); margin-bottom: var(--sp-5); }
 select, textarea, .advanced-fields input, .evidence-query-row input { min-width: 0; width: 100%; background: var(--surface); border: 1px solid var(--control-line); border-radius: var(--radius); padding: 0 var(--sp-3); }
 select, .advanced-fields input, .evidence-query-row input { min-height: var(--control-h); }
-select option { background: var(--surface); }
+select { appearance: none; padding-inline-end: calc(var(--sp-3) + var(--sp-5)); background: var(--chevron) right var(--sp-3) center / 14px no-repeat var(--surface); font: var(--fw-body) var(--fs-md)/1.6 var(--ui); cursor: pointer; }
+select:hover:not(:disabled), select:focus-visible { border-color: var(--accent); }
+select:disabled { color: var(--muted); background-color: var(--soft); cursor: not-allowed; }
+select option { background: var(--surface); color: var(--text); font: var(--fw-body) var(--fs-md)/1.6 var(--ui); }
+/* 支持可定制原生菜单时统一展开样式；其他浏览器保留原生选择交互。 */
+@supports (appearance: base-select) {
+  select, select::picker(select) { appearance: base-select; }
+  select { gap: var(--sp-3); padding: var(--sp-2) var(--sp-3); background-image: none; }
+  select::picker-icon { content: ""; flex: none; width: 14px; height: 14px; margin-inline-start: auto; background: var(--chevron) center / 14px no-repeat; transition: transform var(--dur) var(--ease); }
+  select:open::picker-icon { transform: rotate(180deg); }
+  select::picker(select) { inline-size: anchor-size(width); min-inline-size: 0; max-inline-size: calc(100vw - var(--sp-8)); max-block-size: min(320px, 60dvh); margin-block: var(--sp-1); padding: var(--sp-1); border: 1px solid var(--control-line); border-radius: var(--radius); background: var(--surface); color: var(--text); font: var(--fw-body) var(--fs-md)/1.6 var(--ui); overflow: auto; overscroll-behavior: contain; }
+  select option { display: flex; align-items: center; gap: var(--sp-3); min-height: var(--control-h); padding: var(--sp-2) var(--sp-3); border-radius: var(--radius-sm); white-space: normal; overflow-wrap: anywhere; cursor: pointer; }
+  select option:hover, select option:focus-visible { background: var(--soft); outline: none; }
+  select option:checked { background: var(--info-bg); color: var(--accent); font-weight: var(--fw-strong); }
+  select option:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+  select option::checkmark { order: 1; margin-inline-start: auto; color: var(--accent); }
+}
 textarea { display: block; resize: vertical; min-height: 84px; margin-top: var(--sp-2); padding-block: 10px; line-height: 1.6; }
 .label-sub { font-weight: var(--fw-body); display: block; color: var(--muted); font-size: var(--fs-sm); margin-block: var(--sp-1); }
 .field-hint { font-size: var(--fs-sm); color: var(--muted); margin: var(--sp-2) 0 0; line-height: 1.7; }
@@ -321,5 +337,5 @@ progress::-moz-progress-bar { background: var(--accent); }
 @keyframes pulse { 50% { opacity: .3; } }
 @media (prefers-reduced-motion: reduce) {
   html { scroll-behavior: auto; }
-  *, *::before, *::after { transition: none !important; animation: none !important; }
+  *, *::before, *::after, select::picker-icon { transition: none !important; animation: none !important; }
 }
